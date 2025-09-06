@@ -1,0 +1,24 @@
+# Core System Dependencies for OS Data Wiper
+# Required for Windows system interaction and hardware detection
+
+# Windows Management Instrumentation for hardware detection
+WMI>=1.5.1
+
+# Windows API access for low-level operations (use latest available)
+pywin32>=307
+
+# Optional but recommended for enhanced logging
+colorlog>=6.7.0
+
+# For cryptographic operations (future certificate generation)
+cryptography>=41.0.0
+
+# For configuration management
+pyyaml>=6.0.0
+
+# For progress tracking and UI (future phases)
+tqdm>=4.66.0
+
+# Built-in modules (no installation needed):
+# secrets - Built-in secure random data generation
+# pytest, black, flake8 - Development dependencies (install separately if needed)

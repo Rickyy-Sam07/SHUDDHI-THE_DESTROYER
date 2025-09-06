@@ -1,0 +1,75 @@
+{
+  "certificate_metadata": {
+    "certificate_id": "SHUDDH-20250906-075620-90B4DEDE",
+    "certificate_version": "1.0",
+    "signing_timestamp_utc": "2025-09-06T07:56:20.245483+00:00",
+    "signing_method": "RSA-PSS-SHA256",
+    "signature_algorithm": "RSA-PSS with SHA-256",
+    "key_size": 2048,
+    "development_mode": true
+  },
+  "audit_log": {
+    "audit_metadata": {
+      "audit_id": "SHUDDH-20250906-075620-90B4DEDE",
+      "audit_version": "1.0",
+      "generated_by": "Shuddh OS Data Wiper v2.0",
+      "generation_timestamp_utc": "2025-09-06T07:56:20.135648+00:00",
+      "development_mode": true
+    },
+    "drive_info": {
+      "model": "WD PC SN810 SDCPNRY-512G-1006",
+      "serial_number": "E823_8FA6_BF53_0001_001B_448B_4CB4_F5FC",
+      "size_bytes": 512110190592,
+      "size_gb": 476.94,
+      "interface_type": "SCSI",
+      "media_type": "Fixed hard disk media",
+      "device_id": "\\\\.\\PhysicalDrive0",
+      "firmware": "Unknown"
+    },
+    "wipe_metadata": {
+      "method_attempted": "ATA_SECURE_ERASE",
+      "method_compliant_with": "NIST SP 800-88 Rev. 1 Purge",
+      "timestamp_utc": "2025-09-06T12:00:00Z",
+      "completion_timestamp_utc": "2025-09-06T12:00:04Z",
+      "execution_duration": "0:00:04",
+      "status": "SUCCESS",
+      "primary_method_used": true,
+      "fallback_method_used": false,
+      "execution_details": "Successfully simulated ATA Secure Erase"
+    },
+    "verification_metadata": {
+      "verification_method": "EXIT_CODE_CHECK",
+      "verification_status": "SUCCESS",
+      "verification_timestamp_utc": "2025-09-06T07:56:20.134887+00:00",
+      "verification_hash": null,
+      "verification_details": "ATA_SECURE_ERASE command returned success (0) exit code",
+      "verification_reliable": true
+    },
+    "system_metadata": {
+      "os_version": "nt win32",
+      "python_version": "3.13.3",
+      "hostname": "DESKTOP-AE8TMG8",
+      "username": "HP",
+      "audit_trail_hash": null
+    },
+    "compliance_certification": {
+      "standard": "NIST SP 800-88 Rev. 1 Purge",
+      "certification_level": "V1_DEVELOPMENT",
+      "audit_trail_integrity": "SIMULATED",
+      "certificate_format": "JSON + PDF"
+    },
+    "safety_notice": {
+      "development_mode": true,
+      "simulated_operations": true,
+      "no_actual_wiping": true,
+      "no_harm_possible": true,
+      "verification_simulated": true
+    }
+  },
+  "cryptographic_signature": {
+    "audit_log_hash": "sha256:b4a68e9025586265076dc2a600f1d56194a2bec3aa44c7d1c79f54866595e386",
+    "signature": "47e9a2090be3a11d30b6b9b067a99aa0ab223046af99d8c9c80809eeb6e6337ec309bdf1dcd5821f4008b388f25316b52c8871b1b0d64d97da37fa5d45581bd02a58410b7bdfa4ff35854941ee1c8008807f639fdce5801117a53bff7d80c906b021410b007b5378d63594d97e0c3a945adc841f1a62bdc0e07f203297eef4138c0e06404fbce42fc760aa2209933282c7536d97a8fe2e11ed364a586b9250012a790698647d3f02be48e6d73993d2f3e2a3dbdcc0d4c5508be4a985293e88adde7bea799558b1a4de414bbaec87727db4c4a2cebe7fb87be3faca5d1ccac0b61ba3e084272497bc25ea32f306f0db6a0680e3c01474d76733f16c1874cca6d6",
+    "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsDIPYI6UsxGdd+5FPd8f\nU0FaX5RA0fK5puFtuRA+0aIMj1fs/afp16la8lDk/H9WcW0KZVWuvRessfmqiL59\nngk9TSRGo+9Xyq3JUAEVGezkE6/uQwe/Gwk67ai8jyv6uOSdt5vIlWKh3xAwIMDZ\nnaE8dHxcZb3g/kAgzTGZiSH8EqIkXR54FdY+NF5D0+ESVpSr7fE2JLDpKwpvvzDM\n22KLfpaUVfpupPzP2CzIXADXRsXmZ1vEw8QrM8lK/poFRJcgF6N1KnEa6ffstO/n\nnx3vybb6FTJHGkYiXt2YLj5bH117sC5IuLobXHWk5TmJ1CNKB2ykOo+YGOjSAu0j\nrQIDAQAB\n-----END PUBLIC KEY-----\n",
+    "verification_instructions": "Use public key to verify signature against audit_log canonical JSON"
+  }
+}
