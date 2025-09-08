@@ -79,6 +79,9 @@ class SystemCore:
             logger.addHandler(handler)
             logger.setLevel(logging.INFO)
         return logger
+    ### ------------------------------------------------------
+    ### 1 : Admin Check
+    ### ------------------------------------------------------
 
     def check_admin(self) -> bool:
         """Check if current process has administrator privileges
@@ -144,6 +147,9 @@ class SystemCore:
         if not self.check_admin():
             self.elevate_privileges()
 
+    ### ------------------------------------------------------
+    ### 2 : Drive info json
+    ### -------------------------------------------------------
     def get_drive_info(self) -> List[Dict[str, Any]]:
         """Enumerate all physical drives using Windows Management Instrumentation
         
@@ -204,6 +210,9 @@ class SystemCore:
         except Exception as e:
             raise HardwareDetectionError(f"Drive enumeration failed: {e}")
 
+    ### -----------------------------------------------
+    ### 3 : System Wiping Tools Check 
+    ### -----------------------------------------------
     def determine_wipe_method(self, drive_info: Dict[str, Any]) -> Dict[str, str]:
         """Determine the optimal wipe method based on drive characteristics
         
