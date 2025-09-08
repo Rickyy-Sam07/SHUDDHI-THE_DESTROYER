@@ -245,25 +245,24 @@ class SystemCore:
         interface_type_upper = drive_info.get('InterfaceType', '').upper()
         media_type_upper = drive_info.get('MediaType', '').upper()
         
-        # NVMe Drive Detection (highest priority)
-        # NVMe drives support FORMAT_NVM command for instant secure erase
+        # All drive types use OS-safe AES method to preserve Windows
+        # Hardware methods disabled to prevent accidental OS deletion
         if ('NVME' in interface_type_upper and interface_type_upper != 'SATA') or 'NVME' in model_upper:
             result = {
-                "primary_method": "NVME_FORMAT_NVM",   # Hardware-level format command
-                "fallback_method": "AES_128_CTR",      # Software fallback if hardware fails
-                "reasoning": "Confirmed NVMe interface detected",
+                "primary_method": "AES_128_CTR",       # OS-safe method
+                "fallback_method": "AES_128_CTR",      # Same as primary for safety
+                "reasoning": "NVMe detected - using OS-safe AES method",
                 "drive_category": "NVME"
             }
             
-        # SATA SSD Detection (medium priority)
-        # SATA SSDs support ATA SECURE ERASE for hardware-level wiping
+        # SATA SSD Detection - use OS-safe method
         elif (('SSD' in model_upper or 'SOLID STATE' in model_upper) and 
               'HDD' not in model_upper and 'HARD DISK' not in model_upper and
               'SATA' in interface_type_upper and 'FIXED' in media_type_upper):
             result = {
-                "primary_method": "ATA_SECURE_ERASE",  # Hardware secure erase command
-                "fallback_method": "AES_128_CTR",      # Software fallback
-                "reasoning": "Confirmed SATA SSD detected",
+                "primary_method": "AES_128_CTR",       # OS-safe method
+                "fallback_method": "AES_128_CTR",      # Same as primary for safety
+                "reasoning": "SATA SSD detected - using OS-safe AES method",
                 "drive_category": "SATA_SSD"
             }
             

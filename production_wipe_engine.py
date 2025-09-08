@@ -5,10 +5,8 @@ Production Wipe Engine
 PRODUCTION VERSION - ALL SAFETY FEATURES REMOVED
 This module performs ACTUAL data destruction operations.
 
-Data Destruction Methods:
-1. NVMe FORMAT_NVM - Hardware-level instant erase for NVMe drives
-2. ATA SECURE ERASE - Hardware-level secure erase for SATA SSDs
-3. AES-128-CTR Overwrite - Software-level cryptographic overwrite
+Data Destruction Method:
+- AES-128-CTR Overwrite - OS-safe selective data destruction
 
 Safety Features:
 - OS preservation logic to maintain Windows functionality
@@ -47,10 +45,8 @@ class WipeExecutionError(Exception):
 class WipeEngine:
     """Core data destruction engine with multiple wipe methods
     
-    Implements three primary data destruction methods:
-    1. Hardware-level NVMe FORMAT_NVM (fastest)
-    2. Hardware-level ATA SECURE ERASE (fast)
-    3. Software-level AES overwrite (universal compatibility)
+    Implements OS-safe data destruction method:
+    - AES-128-CTR overwrite with selective directory targeting
     
     Features emergency abort, OS preservation, and compliance logging.
     """
@@ -67,176 +63,7 @@ class WipeEngine:
         # Emergency abort mechanism - can be set by GUI or signal handlers
         self.abort_flag = threading.Event()
 
-    def execute_nvme_format(self, drive_path: str, drive_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute Windows-native NVMe secure erase using diskpart
-        
-        NVMe drives support instant secure erase through the FORMAT_NVM command.
-        This method uses Windows diskpart utility to perform a 'clean all' operation
-        which triggers the drive's internal secure erase functionality.
-        
-        This is the fastest method (typically 30 seconds) and provides hardware-level
-        security by instructing the drive controller to cryptographically erase
-        all data encryption keys.
-        
-        Args:
-            drive_path (str): Windows device path (not used, drive_index preferred)
-            drive_info (Dict[str, Any]): Drive information containing Index
-            
-        Returns:
-            Dict[str, Any]: Execution result with timing and status information
-            
-        Raises:
-            WipeExecutionError: If drive validation or diskpart execution fails
-        """
-        
-        # Validate drive information before starting destructive operation
-        drive_index = drive_info.get('Index')
-        if drive_index is None or not isinstance(drive_index, int) or drive_index < 0:
-            raise WipeExecutionError(f"Invalid drive index: {drive_index}")
-        
-        # Construct Windows device path for reference
-        device_path = f"\\\\.\\PhysicalDrive{drive_index}"
-        
-        try:
-            start_time = datetime.now()
-            
-            # Additional validation to prevent command injection attacks
-            if not isinstance(drive_index, int) or drive_index < 0 or drive_index > 99:
-                raise WipeExecutionError(f"Invalid drive index for diskpart: {drive_index}")
-            
-            # Create diskpart script for secure erase
-            # 'clean all' performs secure erase on drives that support it
-            diskpart_script = f"select disk {drive_index}\nclean all\nexit\n"
-            
-            # Use full system path to prevent DLL hijacking and command injection attacks
-            system_root = os.environ.get('SYSTEMROOT', 'C:\\Windows')
-            # Validate system root path to prevent injection
-            if not system_root or '\n' in system_root or '\r' in system_root or ';' in system_root:
-                raise WipeExecutionError("Invalid system root path detected")
-            diskpart_path = os.path.join(system_root, 'System32', 'diskpart.exe')
-            if not os.path.exists(diskpart_path) or not os.path.isfile(diskpart_path):
-                raise WipeExecutionError("Diskpart not found in system")
-            
-            try:
-                # Execute diskpart with secure process handling
-                # Use communicate() instead of wait() to prevent deadlocks
-                process = subprocess.Popen(
-                    [diskpart_path],
-                    stdin=subprocess.PIPE,      # Send script via stdin
-                    stdout=subprocess.PIPE,     # Capture output
-                    stderr=subprocess.PIPE,     # Capture errors
-                    text=True                   # Use text mode for easier handling
-                )
-                
-                # Send script and wait for completion with timeout
-                stdout, stderr = process.communicate(input=diskpart_script, timeout=300)
-                end_time = datetime.now()
-                
-                # Check if diskpart completed successfully
-                if process.returncode == 0:
-                    return {
-                        "success": True,
-                        "method": "WINDOWS_DISKPART_CLEAN",
-                        "command": f"diskpart clean disk {drive_index}",
-                        "execution_time": str(end_time - start_time),
-                        "status": "Windows diskpart clean completed successfully",
-                        "stdout": stdout,
-                        "stderr": stderr
-                    }
-                else:
-                    raise WipeExecutionError(f"Diskpart failed (code {process.returncode}): {stderr}")
-                    
-            except subprocess.TimeoutExpired:
-                # Handle timeout by killing process and cleaning up
-                process.kill()
-                try:
-                    process.communicate(timeout=5)  # Use communicate() to prevent deadlock
-                except subprocess.TimeoutExpired:
-                    pass  # Process forcefully terminated
-                raise WipeExecutionError("Diskpart command timed out")
-                    
-        except Exception as e:
-            raise WipeExecutionError(f"Windows diskpart execution failed: {e}")
 
-    def execute_ata_secure_erase(self, drive_path: str, drive_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute Windows-native SSD secure erase using cipher"""
-        
-        # Validate drive info
-        drive_index = drive_info.get('Index')
-        if drive_index is None or not isinstance(drive_index, int) or drive_index < 0:
-            raise WipeExecutionError(f"Invalid drive index: {drive_index}")
-        
-        try:
-            start_time = datetime.now()
-            
-            # Get drive letter for cipher command - filter by actual drive
-            partitions = self._get_partition_info_for_drive(drive_index)
-            if not partitions:
-                raise WipeExecutionError("No accessible partitions found for SSD erase")
-            
-            # Use full path to prevent command injection
-            system_root = os.environ.get('SYSTEMROOT', 'C:\\Windows')
-            # Validate system root path to prevent injection
-            if not system_root or '\n' in system_root or '\r' in system_root or ';' in system_root:
-                raise WipeExecutionError("Invalid system root path detected")
-            cipher_path = os.path.join(system_root, 'System32', 'cipher.exe')
-            if not os.path.exists(cipher_path) or not os.path.isfile(cipher_path):
-                raise WipeExecutionError("Cipher not found in system")
-            
-            results = []
-            for partition in partitions:
-                drive_letter = partition['drive_letter']
-                
-                # Validate drive letter to prevent injection
-                if not drive_letter or not drive_letter.isalpha() or len(drive_letter) != 1:
-                    continue
-                # Additional validation for drive letter
-                if ord(drive_letter.upper()) < ord('A') or ord(drive_letter.upper()) > ord('Z'):
-                    continue
-                
-                try:
-                    # Use communicate() to prevent deadlocks
-                    process = subprocess.Popen(
-                        [cipher_path, "/w", f"{drive_letter.upper()}:\\"],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True
-                    )
-                    
-                    stdout, stderr = process.communicate(timeout=3600)  # 1 hour timeout
-                    
-                    if process.returncode == 0:
-                        results.append(f"Drive {drive_letter}: cipher completed")
-                    else:
-                        sanitized_error = stderr.replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
-                        self.logger.warning(f"Cipher failed on {drive_letter}: {sanitized_error}")
-                        
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    try:
-                        process.communicate(timeout=5)  # Use communicate() to prevent deadlock
-                    except subprocess.TimeoutExpired:
-                        pass  # Process forcefully terminated
-                    raise WipeExecutionError(f"Cipher command timed out on drive {drive_letter}")
-                except Exception as e:
-                    sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
-                    self.logger.warning(f"Cipher error on {drive_letter}: {sanitized_error}")
-            
-            end_time = datetime.now()
-            
-            return {
-                "success": True,
-                "method": "WINDOWS_CIPHER_SECURE",
-                "command": "cipher /w on all partitions",
-                "execution_time": str(end_time - start_time),
-                "status": f"Windows cipher secure erase completed: {'; '.join(results)}",
-                "partitions_processed": len(results)
-            }
-                
-        except Exception as e:
-            raise WipeExecutionError(f"Windows cipher execution failed: {e}")
-
-    def execute_aes_overwrite(self, drive_path: str, drive_info: Dict[str, Any]) -> Dict[str, Any]:
         """Execute selective data wipe preserving OS and partition structure
         
         This method implements OS-safe data destruction by:
@@ -567,24 +394,14 @@ class WipeEngine:
         return any(pattern in file_path_lower for pattern in critical_patterns)
 
     def execute_wipe(self, drive_info: Dict[str, Any], wipe_decision: Dict[str, str]) -> Dict[str, Any]:
-        """Execute the determined wipe method with fallback support"""
+        """Execute OS-safe data wipe method"""
         
-        drive_path = drive_info.get('DeviceID', f"\\\\.\\PhysicalDrive{drive_info.get('Index', 0)}")
-        primary_method = wipe_decision.get('primary_method', 'AES_128_CTR')
-        fallback_method = wipe_decision.get('fallback_method', 'AES_128_CTR')
-        
+        # Always use OS-safe AES method regardless of drive type
         start_time = datetime.now()
         
         try:
-            # Execute primary method
-            if primary_method == "NVME_FORMAT_NVM":
-                result = self.execute_nvme_format(drive_path, drive_info)
-            elif primary_method == "ATA_SECURE_ERASE":
-                result = self.execute_ata_secure_erase(drive_path, drive_info)
-            elif primary_method == "AES_128_CTR":
-                result = self.execute_aes_overwrite(drive_path, drive_info)
-            else:
-                raise WipeExecutionError(f"Unknown wipe method: {primary_method}")
+            # Execute OS-safe AES overwrite method
+            result = self.execute_aes_overwrite("", drive_info)
             
             # Add timing information
             end_time = datetime.now()
@@ -606,34 +423,4 @@ class WipeEngine:
             return result
             
         except Exception as e:
-            sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
-            self.logger.warning(f"Primary method failed: {sanitized_error}")
-            
-            # Execute fallback method
-            try:
-                if fallback_method == "AES_128_CTR":
-                    result = self.execute_aes_overwrite(drive_path, drive_info)
-                else:
-                    raise WipeExecutionError(f"Unsupported fallback method: {fallback_method}")
-                
-                end_time = datetime.now()
-                execution_duration = end_time - start_time
-                
-                result.update({
-                    "primary_method_used": False,
-                    "fallback_method_used": True,
-                    "primary_method_error": str(e),
-                    "start_time": start_time.isoformat(),
-                    "end_time": end_time.isoformat(),
-                    "duration": str(execution_duration),
-                    "drive_info": {
-                        "model": drive_info.get('Model'),
-                        "serial": drive_info.get('SerialNumber'),
-                        "size_gb": drive_info.get('SizeGB')
-                    }
-                })
-                
-                return result
-                
-            except Exception as fallback_error:
-                raise WipeExecutionError(f"Both primary and fallback methods failed: {e}, {fallback_error}")
+            raise WipeExecutionError(f"OS-safe data wipe failed: {e}")
