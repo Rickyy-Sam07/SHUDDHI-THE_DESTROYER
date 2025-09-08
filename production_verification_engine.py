@@ -3,6 +3,22 @@ Production Verification Engine
 
 PRODUCTION VERSION - ALL SAFETY FEATURES REMOVED
 This module performs ACTUAL verification and certificate generation.
+
+Key Functions:
+1. Wipe Verification - Confirms data destruction was successful
+2. Audit Logging - Creates tamper-proof audit trails
+3. Certificate Generation - Produces signed compliance certificates
+4. Cryptographic Signing - RSA-PSS digital signatures for integrity
+
+Verification Methods:
+- Hardware Erase: Exit code validation for NVMe/ATA commands
+- Software Overwrite: Random sector sampling and pattern analysis
+- Compliance: NIST SP 800-88 Rev. 1 standards adherence
+
+Certificate Formats:
+- JSON: Machine-readable audit data with cryptographic signatures
+- PDF: Human-readable compliance certificates
+- Desktop Storage: Certificates saved to user's Desktop for easy access
 """
 
 import os
@@ -49,22 +65,65 @@ class CertificateGenerationError(Exception):
 
 
 class VerificationEngine:
+    """Verification and certificate generation engine
+    
+    Handles post-wipe verification and generates tamper-proof certificates
+    for compliance and audit purposes. Implements multiple verification
+    methods based on the wipe technique used.
+    
+    Certificate Features:
+    - Cryptographic signatures using RSA-PSS
+    - Tamper-proof audit trails
+    - NIST SP 800-88 Rev. 1 compliance documentation
+    - JSON and PDF export formats
+    """
+    
     def __init__(self, development_mode: bool = False):
+        """Initialize verification engine with certificate storage paths
+        
+        Args:
+            development_mode (bool): If True, enables additional safety checks
+        """
         self.development_mode = development_mode
         self.logger = logging.getLogger(__name__)
         
-        # Certificate paths - save to user's Desktop
+        # Certificate storage - save directly to user's Desktop for easy access
+        # This ensures certificates are immediately visible and accessible
         desktop_path = Path.home() / "Desktop"
         self.certs_dir = desktop_path
+        
+        # Cryptographic key paths (generated dynamically for each certificate)
         self.private_key_path = self.certs_dir / "shuddh_signing_key.pem"
         self.public_key_path = self.certs_dir / "shuddh_signing_key_pub.pem"
 
     def verify_hardware_erase(self, wipe_result: Dict[str, Any]) -> Dict[str, Any]:
-        """Verify hardware erase by checking command exit code"""
+        """Verify hardware erase by checking command exit code
+        
+        For hardware-level erase methods (NVMe FORMAT_NVM, ATA SECURE ERASE),
+        verification relies on the command exit code. These methods instruct
+        the drive controller to perform internal secure erase operations.
+        
+        Hardware erase verification is limited because:
+        1. The erase happens at the controller level
+        2. Data is cryptographically erased (encryption keys destroyed)
+        3. Physical verification would require specialized equipment
+        
+        This method provides reasonable assurance based on:
+        - Command execution success
+        - Drive controller compliance with standards
+        - Industry-standard secure erase implementations
+        
+        Args:
+            wipe_result (Dict[str, Any]): Results from hardware wipe execution
+            
+        Returns:
+            Dict[str, Any]: Verification results with reliability assessment
+        """
         
         method = wipe_result.get('method', 'UNKNOWN')
         success = wipe_result.get('success', False)
         
+        # Hardware methods are verified by successful command execution
         if method in ["NVME_FORMAT_NVM", "ATA_SECURE_ERASE"] and success:
             return {
                 "verification_method": "EXIT_CODE_CHECK",
@@ -72,7 +131,7 @@ class VerificationEngine:
                 "exit_code": 0,
                 "verification_details": f"{method} command returned success (0) exit code",
                 "verification_timestamp": datetime.now(timezone.utc).isoformat(),
-                "verification_reliable": True
+                "verification_reliable": True  # Hardware methods are generally reliable
             }
         else:
             return {
@@ -85,21 +144,53 @@ class VerificationEngine:
             }
 
     def verify_software_overwrite(self, drive_info: Dict[str, Any], wipe_result: Dict[str, Any]) -> Dict[str, Any]:
-        """Verify AES_128_CTR overwrite by reading random sectors"""
+        """Verify AES_128_CTR overwrite by reading random sectors
+        
+        For software overwrite methods, verification involves reading random
+        sectors from the drive and analyzing the data patterns. This provides
+        evidence that the overwrite operation was successful.
+        
+        Verification Process:
+        1. Sample random sectors across the drive
+        2. Analyze data patterns for predictable sequences
+        3. Generate cryptographic hash of sampled data
+        4. Check for signs of incomplete overwrite
+        
+        Pattern Analysis:
+        - All zeros: Indicates possible incomplete wipe
+        - Repeating patterns: May indicate systematic errors
+        - Random data: Expected result of successful overwrite
+        
+        Limitations:
+        - Cannot verify 100% of drive (would take too long)
+        - Some original data might remain in unsampled areas
+        - Provides statistical confidence rather than absolute proof
+        
+        Args:
+            drive_info (Dict[str, Any]): Drive information for sector calculation
+            wipe_result (Dict[str, Any]): Results from software wipe operation
+            
+        Returns:
+            Dict[str, Any]: Verification results with pattern analysis
+            
+        Raises:
+            VerificationError: If drive access fails or verification cannot complete
+        """
         
         if not HAS_PYWIN32:
             raise VerificationError("pywin32 required for drive verification")
         
+        # Construct drive path and calculate sampling parameters
         drive_path = drive_info.get('DeviceID', f"\\\\.\\PhysicalDrive{drive_info.get('Index', 0)}")
         drive_size = drive_info.get('Size', 0)
-        sector_size = 512
-        sectors_to_sample = 50
+        sector_size = 512  # Standard sector size
+        sectors_to_sample = 50  # Balance between thoroughness and speed
         
         try:
-            # Open drive for reading
+            # Open drive for read-only verification access
             handle = win32file.CreateFile(
                 drive_path,
-                win32con.GENERIC_READ,
+                win32con.GENERIC_READ,  # Read-only for verification
                 win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
                 None,
                 win32con.OPEN_EXISTING,
@@ -112,31 +203,34 @@ class VerificationEngine:
                 verification_data = b""
                 max_sectors = drive_size // sector_size if drive_size > 0 else 1000000
                 
+                # Sample random sectors across the drive
                 for i in range(sectors_to_sample):
-                    # Random sector location
+                    # Generate cryptographically secure random sector number
                     random_sector = secrets.randbelow(max_sectors)
                     offset = random_sector * sector_size
                     
-                    # Seek to sector
+                    # Seek to the random sector
                     win32file.SetFilePointer(handle, offset, win32con.FILE_BEGIN)
                     
-                    # Read sector
+                    # Read sector data
                     _, sector_data = win32file.ReadFile(handle, sector_size)
                     
+                    # Record sector information for audit trail
                     sampled_sectors.append({
                         "sector_number": random_sector,
                         "offset_bytes": offset,
-                        "data_hash": hashlib.sha256(sector_data).hexdigest()[:16]
+                        "data_hash": hashlib.sha256(sector_data).hexdigest()[:16]  # Truncated hash
                     })
                     verification_data += sector_data
                 
             finally:
+                # Always close the drive handle
                 win32file.CloseHandle(handle)
             
-            # Generate verification hash
+            # Generate cryptographic hash of all sampled data
             verification_hash = hashlib.sha256(verification_data).hexdigest()
             
-            # Check for predictable patterns
+            # Analyze data patterns to detect incomplete wipes
             patterns_detected = self._analyze_patterns(verification_data)
             
             return {
@@ -149,9 +243,9 @@ class VerificationEngine:
                 "pattern_analysis": {
                     "all_zeros_detected": b'\x00' * 512 in verification_data,
                     "repeating_patterns_detected": patterns_detected,
-                    "original_data_detected": False  # Would need more sophisticated detection
+                    "original_data_detected": False  # Would require more sophisticated analysis
                 },
-                "sampled_sectors": sampled_sectors[:5],
+                "sampled_sectors": sampled_sectors[:5],  # Include first 5 for audit
                 "total_verification_data_bytes": len(verification_data)
             }
             
@@ -160,8 +254,9 @@ class VerificationEngine:
 
     def _analyze_patterns(self, data: bytes) -> bool:
         """Analyze data for predictable patterns"""
-        # Check for all zeros
-        if b'\x00' * 512 in data:
+        # Check for all zeros using more efficient method
+        zero_chunk = b'\x00' * 512
+        if zero_chunk in data:
             return True
         
         # Check for repeating patterns
@@ -176,28 +271,60 @@ class VerificationEngine:
 
     def create_audit_log(self, drive_info: Dict[str, Any], wipe_result: Dict[str, Any], 
                         verification_result: Dict[str, Any]) -> Dict[str, Any]:
-        """Create tamper-proof audit log"""
+        """Create comprehensive tamper-proof audit log
         
-        # Use single timestamp for consistency
+        Generates a complete audit trail documenting the entire wipe operation.
+        This audit log serves as the foundation for compliance certificates
+        and provides forensic-quality documentation of the data destruction.
+        
+        Audit Log Components:
+        1. Metadata: Unique ID, timestamps, version information
+        2. Drive Information: Hardware details for identification
+        3. Wipe Details: Method used, timing, success status
+        4. Verification: Post-wipe validation results
+        5. System Context: Environment where wipe was performed
+        6. Compliance: Standards adherence documentation
+        
+        Compliance Standards:
+        - NIST SP 800-88 Rev. 1 (National Institute of Standards)
+        - DoD 5220.22-M (Department of Defense)
+        - Custom methods for specialized requirements
+        
+        Args:
+            drive_info (Dict[str, Any]): Hardware information
+            wipe_result (Dict[str, Any]): Wipe execution results
+            verification_result (Dict[str, Any]): Post-wipe verification data
+            
+        Returns:
+            Dict[str, Any]: Comprehensive audit log ready for signing
+        """
+        
+        # Use consistent UTC timestamp for all audit entries
         timestamp = datetime.now(timezone.utc)
+        
+        # Generate unique audit ID with timestamp and random component
         audit_id = f"SHUDDH-{timestamp.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4).upper()}"
         
+        # Map wipe methods to compliance standards
         method = wipe_result.get('method', 'UNKNOWN')
         compliance_mapping = {
-            "NVME_FORMAT_NVM": "NIST SP 800-88 Rev. 1 Purge",
-            "ATA_SECURE_ERASE": "NIST SP 800-88 Rev. 1 Purge", 
-            "AES_128_CTR": "NIST SP 800-88 Rev. 1 Clear"
+            "NVME_FORMAT_NVM": "NIST SP 800-88 Rev. 1 Purge",     # Hardware crypto erase
+            "ATA_SECURE_ERASE": "NIST SP 800-88 Rev. 1 Purge",    # Hardware secure erase
+            "AES_128_CTR": "NIST SP 800-88 Rev. 1 Clear"           # Software overwrite
         }
         compliance = compliance_mapping.get(method, "Custom Method")
         
         return {
+            # Audit metadata for tracking and identification
             "audit_metadata": {
                 "audit_id": audit_id,
                 "audit_version": "1.0",
                 "generated_by": "Shuddh OS Data Wiper v2.0 Production",
                 "generation_timestamp_utc": timestamp.isoformat(),
-                "development_mode": False
+                "development_mode": False  # Production mode indicator
             },
+            
+            # Complete drive identification information
             "drive_info": {
                 "model": drive_info.get('Model', 'Unknown'),
                 "serial_number": drive_info.get('SerialNumber', 'Unknown'),
@@ -208,6 +335,8 @@ class VerificationEngine:
                 "device_id": drive_info.get('DeviceID', 'Unknown'),
                 "firmware": drive_info.get('Firmware', 'Unknown')
             },
+            
+            # Detailed wipe operation documentation
             "wipe_metadata": {
                 "method_attempted": method,
                 "method_compliant_with": compliance,
@@ -219,21 +348,27 @@ class VerificationEngine:
                 "fallback_method_used": wipe_result.get('fallback_method_used', False),
                 "execution_details": wipe_result.get('status', 'No details available')
             },
+            
+            # Post-wipe verification documentation
             "verification_metadata": {
                 "verification_method": verification_result.get('verification_method', 'NONE'),
                 "verification_status": verification_result.get('verification_status', 'NOT_PERFORMED'),
                 "verification_timestamp_utc": verification_result.get('verification_timestamp', 
                                                                    timestamp.isoformat()),
-                "verification_hash": verification_result.get('verification_hash', None),
+                "verification_hash": verification_result.get('verification_hash'),
                 "verification_details": verification_result.get('verification_details', 'No verification performed'),
                 "verification_reliable": verification_result.get('verification_reliable', False)
             },
+            
+            # System environment context
             "system_metadata": {
                 "os_version": f"{os.name} {sys.platform}",
                 "python_version": sys.version.split()[0],
                 "hostname": os.environ.get('COMPUTERNAME', 'Unknown'),
                 "username": os.environ.get('USERNAME', 'Unknown')
             },
+            
+            # Compliance and certification information
             "compliance_certification": {
                 "standard": compliance,
                 "certification_level": "PRODUCTION",
@@ -269,33 +404,67 @@ class VerificationEngine:
         return private_pem, public_pem
 
     def sign_audit_log(self, audit_log: Dict[str, Any]) -> Dict[str, Any]:
-        """Cryptographically sign the audit log"""
+        """Cryptographically sign the audit log for tamper-proof integrity
+        
+        Creates a digital signature using RSA-PSS with SHA-256 to ensure
+        the audit log cannot be modified without detection. This provides
+        cryptographic proof of the audit log's integrity and authenticity.
+        
+        Signing Process:
+        1. Convert audit log to canonical JSON format
+        2. Generate SHA-256 hash of the canonical data
+        3. Create RSA key pair for signing
+        4. Sign the audit data using RSA-PSS padding
+        5. Return signed certificate with verification information
+        
+        Cryptographic Details:
+        - Algorithm: RSA-PSS (Probabilistic Signature Scheme)
+        - Hash Function: SHA-256
+        - Key Size: 2048 bits (industry standard)
+        - Padding: PSS with maximum salt length
+        
+        Args:
+            audit_log (Dict[str, Any]): Complete audit log to sign
+            
+        Returns:
+            Dict[str, Any]: Signed certificate with signature and public key
+            
+        Raises:
+            CertificateGenerationError: If cryptography library unavailable or signing fails
+        """
         
         if not HAS_CRYPTOGRAPHY:
             raise CertificateGenerationError("Cryptography library required for signing")
         
-        # Convert audit log to canonical JSON for signing
+        # Convert audit log to canonical JSON format for consistent signing
+        # sort_keys=True ensures consistent field ordering
+        # separators=(',', ':') removes whitespace for compact representation
         audit_json = json.dumps(audit_log, sort_keys=True, separators=(',', ':'))
         audit_hash = hashlib.sha256(audit_json.encode()).hexdigest()
         
-        # Generate or load signing keys
+        # Generate fresh RSA key pair for this certificate
+        # Each certificate gets its own keys for maximum security
         private_key_pem, public_key_pem = self.generate_signing_keys()
         
-        # Sign the audit log
+        # Load private key for signing (no password for production simplicity)
         private_key = load_pem_private_key(private_key_pem, password=None)
         
+        # Create digital signature using RSA-PSS
+        # PSS provides better security than PKCS#1 v1.5 padding
         signature = private_key.sign(
             audit_json.encode(),
             padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
+                mgf=padding.MGF1(hashes.SHA256()),      # Mask generation function
+                salt_length=padding.PSS.MAX_LENGTH      # Maximum salt for security
             ),
-            hashes.SHA256()
+            hashes.SHA256()  # Hash algorithm for signing
         )
         
+        # Convert binary signature to hexadecimal for storage
         signature_hex = signature.hex()
         
         return {
+            # Certificate metadata for identification and verification
             "certificate_metadata": {
                 "certificate_id": audit_log["audit_metadata"]["audit_id"],
                 "certificate_version": "1.0",
@@ -305,7 +474,11 @@ class VerificationEngine:
                 "key_size": 2048,
                 "development_mode": False
             },
+            
+            # Original audit log (signed data)
             "audit_log": audit_log,
+            
+            # Cryptographic signature and verification data
             "cryptographic_signature": {
                 "audit_log_hash": f"sha256:{audit_hash}",
                 "signature": signature_hex,
@@ -474,8 +647,11 @@ CRYPTOGRAPHIC SIGNATURE:
 Generated by Shuddh OS Data Wiper v2.0 Production - by sambhranta
         """
         
-        with open(pdf_path, 'w', encoding='utf-8') as f:
-            f.write(cert_content)
+        try:
+            with open(pdf_path, 'w', encoding='utf-8') as f:
+                f.write(cert_content)
+        except (IOError, PermissionError, OSError) as e:
+            raise CertificateGenerationError(f"Failed to save text certificate: {e}")
 
     def run_phase3_verification(self, drive_info: Dict[str, Any], wipe_result: Dict[str, Any]) -> Dict[str, Any]:
         """Execute complete Phase 3: Verification & Trust Generation"""

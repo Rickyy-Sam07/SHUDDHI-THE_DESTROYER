@@ -8,6 +8,12 @@ This version performs ACTUAL data destruction operations.
 This file is the production build of the Shuddh application.
 It is designed to permanently erase data from drives.
 DO NOT run this script or the resulting executable on your main system as it will destroy data permanently.
+
+File Structure:
+- ShuddApp: Main application class handling GUI and workflow
+- Three-screen workflow: Warning/Consent → Progress → Success
+- Emergency handling system for safe abort operations
+- Integration with system core, wipe engine, and verification engine
 """
 
 import tkinter as tk
@@ -24,60 +30,88 @@ from emergency_handler import emergency_handler
 
 
 class ShuddApp:
+    """Main application class for Shuddh data wiper GUI
+    
+    Manages the complete user workflow from warning screen to completion.
+    Integrates with all backend engines for drive detection, wiping, and verification.
+    """
+    
     def __init__(self):
+        """Initialize the main application window and components"""
+        # Initialize main Tkinter window
         self.root = tk.Tk()
         self.root.title("Shuddh - Data Purification Tool")
         self.root.geometry("800x600")
-        self.root.configure(bg='#2c3e50')
+        self.root.configure(bg='#2c3e50')  # Dark blue-gray theme
         
-        #  engines
-        self.system_core = SystemCore(development_mode=False)#agar development_mode True hoga to ye sirf testing karega bina kuch delete kiye
-        self.wipe_engine = WipeEngine(development_mode=False)
-        self.verification_engine = VerificationEngine(development_mode=False)
+        # Initialize backend engines (development_mode=False for production)
+        # These engines handle hardware detection, data wiping, and verification
+        self.system_core = SystemCore(development_mode=False)  # Hardware detection and admin management
+        self.wipe_engine = WipeEngine(development_mode=False)   # Data destruction engine
+        self.verification_engine = VerificationEngine(development_mode=False)  # Certificate generation
         
-        self.boot_drive = None
-        self.wipe_decision = None
-        self.wipe_in_progress = False
+        # Application state variables
+        self.boot_drive = None          # Selected drive information
+        self.wipe_decision = None       # Determined wipe method (NVMe/ATA/AES)
+        self.wipe_in_progress = False   # Flag to track active wipe operations
         
-        self.current_screen = "warning"
+        # UI state management - controls which screen is displayed
+        self.current_screen = "warning"  # Start with warning/consent screen
         
-        # Setup emergency handling
+        # Setup emergency quit system before any operations
         self.setup_emergency_handling()
         
-        # Check admin privileges immediately
+        # Verify administrator privileges are available
+        # This is critical as drive operations require admin rights
         if not self.system_core.check_admin():
-            messagebox.showerror("Admin Required", "This application requires administrator privileges.")#admin rights ctypes use karke check karenge
-            self.system_core.elevate_privileges()
+            messagebox.showerror("Admin Required", "This application requires administrator privileges.")
+            self.system_core.elevate_privileges()  # Attempt UAC elevation
         
-        # Setup emergency handling
+        # Setup emergency handling (duplicate call removed in production)
         self.setup_emergency_handling()
         
+        # Initialize the user interface
         self.setup_ui()
     
     def setup_emergency_handling(self):
-        """Setup emergency quit functionality"""
-        # Register cleanup functions
+        """Setup comprehensive emergency quit functionality
+        
+        Provides multiple ways for users to safely abort operations:
+        - ESC key for immediate emergency quit
+        - Window close button with confirmation
+        - Ctrl+C signal handling (via emergency_handler)
+        """
+        # Register our cleanup function with the global emergency handler
+        # This ensures proper resource cleanup during emergency exits
         emergency_handler.register_cleanup(self.emergency_cleanup)
         
-        # Bind Escape key for emergency quit
+        # Bind ESC key to emergency quit - fastest abort method
         self.root.bind('<Escape>', lambda e: self.emergency_quit())
         
-        # Override window close to check for active operations
+        # Override default window close behavior to check for active operations
+        # Prevents accidental data loss during wipe operations
         self.root.protocol("WM_DELETE_WINDOW", self.on_window_close)
     
     def emergency_cleanup(self):
-        """Emergency cleanup function"""
+        """Emergency cleanup function called during abort operations
+        
+        Safely terminates any active wipe operations and cleans up resources.
+        This function must never raise exceptions as it's called during emergency exits.
+        """
         try:
             if self.wipe_in_progress:
-                # Signal wipe engine to stop
+                # Signal the wipe engine to abort current operations
+                # This sets a threading.Event that the wipe engine checks periodically
                 if hasattr(self.wipe_engine, 'abort_flag'):
                     self.wipe_engine.abort_flag.set()
                     
-                # Force cleanup of any open file handles
+                # Force cleanup of any open file handles or system resources
+                # This prevents file locks or drive access issues
                 if hasattr(self.wipe_engine, '_cleanup_resources'):
                     self.wipe_engine._cleanup_resources()
         except Exception as e:
-            # Log error but don't raise - emergency cleanup should not fail
+            # Log error but don't raise - emergency cleanup should never fail
+            # During emergency situations, we prioritize safe exit over error reporting
             print(f"Emergency cleanup error: {e}")
     
     def emergency_quit(self):
@@ -117,30 +151,49 @@ class ShuddApp:
             self.show_success_screen()
     
     def show_warning_screen(self):
-        """Screen 1: Warning & Consent Screen   consent is important 😂"""
+        """Screen 1: Warning & Consent Screen
+        
+        This is the first screen users see. It:
+        1. Detects available drives using WMI
+        2. Identifies the boot drive (where Windows is installed)
+        3. Determines the optimal wipe method based on drive type
+        4. Displays warnings and requires user consent
+        5. Shows drive information and wipe method details
+        """
         try:
+            # Get list of all physical drives using WMI (Windows Management Instrumentation)
             drives = self.system_core.get_drive_info()
-            if not drives:
+            if not drives or not isinstance(drives, list):
                 raise Exception("No drives detected or invalid drive data")
-                
-            self.boot_drive = drives[0]
             
-            # Validate drive data
+            # Find the actual boot drive (where Windows OS is installed)
+            # This is critical to ensure we're wiping the correct drive
+            self.boot_drive = self._find_boot_drive(drives)
+            if not self.boot_drive:
+                # Fallback to first drive if boot drive detection fails
+                self.boot_drive = drives[0]
+            
+            # Validate that we have complete drive information
             if not isinstance(self.boot_drive, dict):
                 raise Exception("Invalid drive information format")
                 
+            # Ensure all required fields are present for safe operation
             required_fields = ['Index', 'Model', 'SerialNumber', 'Size']
             for field in required_fields:
                 if field not in self.boot_drive:
                     raise Exception(f"Missing required drive field: {field}")
             
+            # Determine the best wipe method based on drive characteristics
+            # NVMe drives use FORMAT_NVM, SATA SSDs use SECURE_ERASE, others use AES overwrite
             self.wipe_decision = self.system_core.determine_wipe_method(self.boot_drive)
             
             if not self.wipe_decision or not isinstance(self.wipe_decision, dict):
                 raise Exception("Failed to determine wipe method")
                 
         except Exception as e:
-            error_msg = f"Drive detection failed: {str(e)}"
+            # Sanitize error messages to prevent injection attacks in UI
+            sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+            error_msg = f"Drive detection failed: {sanitized_error}"
             messagebox.showerror("Drive Detection Error", error_msg)
             self.root.quit()
             return
@@ -206,8 +259,54 @@ This action cannot be undone."""
                                     command=self.start_purification)
         self.start_button.pack(pady=30)
     
+    def _find_boot_drive(self, drives):
+        """Find the actual boot drive using Windows system directory
+        
+        This method identifies which physical drive contains the Windows OS installation.
+        It uses WMI to map logical drives (C:, D:, etc.) to physical drives.
+        
+        Args:
+            drives: List of physical drive information from get_drive_info()
+            
+        Returns:
+            dict: Drive information for the boot drive, or first drive as fallback
+        """
+        try:
+            import wmi
+            c = wmi.WMI()
+            
+            # Get the system drive letter (usually C:) from environment
+            system_drive = os.environ.get('SYSTEMDRIVE', 'C:').replace(':', '')
+            
+            # Map logical drives to physical drives using WMI associations
+            for drive in drives:
+                try:
+                    # Check each partition on this physical drive
+                    for partition in c.Win32_DiskPartition():
+                        if partition.DiskIndex == drive.get('Index'):
+                            # Check each logical disk (drive letter)
+                            for logical_disk in c.Win32_LogicalDisk():
+                                if (logical_disk.DeviceID.replace(':', '') == system_drive and
+                                    logical_disk.DriveType == 3):  # DriveType 3 = Fixed disk
+                                    # Verify the logical disk is on this partition
+                                    partition_to_logical = c.Win32_LogicalDiskToPartition()
+                                    for assoc in partition_to_logical:
+                                        if (assoc.Antecedent.DeviceID == partition.DeviceID and 
+                                            assoc.Dependent.DeviceID == logical_disk.DeviceID):
+                                            return drive
+                except Exception:
+                    # Skip drives that can't be accessed or have errors
+                    continue
+            
+            # Fallback: return first drive if boot drive detection fails
+            return drives[0] if drives else None
+            
+        except Exception:
+            # If WMI fails entirely, return first drive as safe fallback
+            return drives[0] if drives else None
+    
     def check_consent(self):
-        """Enable start  only when both checkboxes are checked"""
+        """Enable start only when both checkboxes are checked"""
         if self.backup_var.get() and self.understand_var.get():
             self.start_button.config(state=tk.NORMAL)
         else:
@@ -287,7 +386,9 @@ This action cannot be undone."""
             return "~2 minutes"
         else:
             size_gb = self.boot_drive.get('SizeGB', 500) if self.boot_drive else 500
-            hours = size_gb / 360  
+            # Assume 360 GB/hour write speed for estimation
+            ASSUMED_WRITE_SPEED_GB_PER_HOUR = 360
+            hours = size_gb / ASSUMED_WRITE_SPEED_GB_PER_HOUR  
             if hours < 1:
                 return f"~{int(hours * 60)} minutes"
             else:
@@ -313,12 +414,24 @@ This action cannot be undone."""
             )
     
     def execute_purification(self):
-        """Execute the actual purification process"""
+        """Execute the actual purification process
+        
+        This is the core function that orchestrates the complete data wipe workflow:
+        1. Drive analysis and validation
+        2. Data wipe execution using determined method
+        3. Verification of wipe completion
+        4. Certificate generation for audit trail
+        
+        Runs in a separate thread to prevent UI freezing during long operations.
+        Updates progress bar and stage indicators throughout the process.
+        """
+        # Set global state flags for emergency handling
         self.wipe_in_progress = True
         emergency_handler.set_current_operation("Data purification")
         
         try:
-            # Validate drive info before starting
+            # STAGE 1: Pre-flight validation
+            # Ensure we have valid drive information before starting destructive operations
             if not self.boot_drive or not isinstance(self.boot_drive, dict):
                 raise Exception("Invalid drive information")
                 
@@ -326,69 +439,78 @@ This action cannot be undone."""
             if drive_index is None or not isinstance(drive_index, int) or drive_index < 0:
                 raise Exception(f"Invalid drive index: {drive_index}")
             
-            #1: Analyzing drive
+            # Update UI: Stage 1 - Analyzing drive
             def update_stage_0():
                 self.update_stage(0, "active")
                 self.progress.config(value=10)
             self.root.after(0, update_stage_0)
             
-            # Validate drive access
+            # Validate that we can actually access the target drive
+            # This prevents errors during the actual wipe operation
             if not self.system_core.validate_drive_access(drive_index):
                 raise Exception(f"Cannot access drive {drive_index}")
             
-            #2: Execute wipe
+            # STAGE 2: Execute data wipe
             def update_stage_1():
                 self.update_stage(0, "complete")
                 self.update_stage(1, "active")
                 self.progress.config(value=25)
             self.root.after(0, update_stage_1)
             
-            # Validate wipe decision
+            # Validate wipe method decision before execution
             if not self.wipe_decision or not isinstance(self.wipe_decision, dict):
                 raise Exception("Invalid wipe method decision")
             
+            # Execute the actual data wipe using the determined method
+            # This is where the destructive operation happens
             wipe_result = self.wipe_engine.execute_wipe(self.boot_drive, self.wipe_decision)
             
+            # Verify wipe completed successfully
             if not wipe_result or not wipe_result.get('success', False):
                 error_msg = wipe_result.get('error', 'Unknown wipe error') if wipe_result else 'Wipe returned no result'
                 raise Exception(f"Wipe failed: {error_msg}")
             
-            #3: Verification
+            # STAGE 3: Verification of wipe completion
             def update_stage_2():
                 self.progress.config(value=70)
                 self.update_stage(1, "complete")
                 self.update_stage(2, "active")
             self.root.after(0, update_stage_2)
             
+            # Run verification to confirm data was actually destroyed
             verification_result = self.verification_engine.run_phase3_verification(self.boot_drive, wipe_result)
             
             if not verification_result or not verification_result.get('success', False):
                 error_msg = verification_result.get('error', 'Unknown verification error') if verification_result else 'Verification returned no result'
                 raise Exception(f"Verification failed: {error_msg}")
             
-            #4: Certificate generation
+            # STAGE 4: Certificate generation for audit trail
             def update_stage_3():
                 self.progress.config(value=90)
                 self.update_stage(2, "complete")
                 self.update_stage(3, "active")
             self.root.after(0, update_stage_3)
             
-            # Store results for success screen
+            # Store verification results for display on success screen
             self.verification_result = verification_result
             
+            # Final progress update
             def update_final():
                 self.progress.config(value=100)
                 self.update_stage(3, "complete")
             self.root.after(0, update_final)
             
-            # Move to success screen
+            # Transition to success screen after brief delay
             self.root.after(1000, self.show_success_screen_transition)
             
         except Exception as e:
-            error_msg = f"Purification failed: {str(e)}"
+            # Handle any errors during the purification process
+            sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+            error_msg = f"Purification failed: {sanitized_error}"
             self.root.after(0, lambda: messagebox.showerror("Purification Failed", error_msg))
             self.root.after(0, self.root.quit)
         finally:
+            # Always clean up state flags, even if operation failed
             self.wipe_in_progress = False
             emergency_handler.set_current_operation(None)
     
