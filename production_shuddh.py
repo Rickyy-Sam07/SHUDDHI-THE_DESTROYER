@@ -67,9 +67,6 @@ class ShuddApp:
             messagebox.showerror("Admin Required", "This application requires administrator privileges.")
             self.system_core.elevate_privileges()  # Attempt UAC elevation
         
-        # Setup emergency handling (duplicate call removed in production)
-        self.setup_emergency_handling()
-        
         # Initialize the user interface
         self.setup_ui()
     
@@ -192,7 +189,7 @@ class ShuddApp:
                 
         except Exception as e:
             # Sanitize error messages to prevent injection attacks in UI
-            sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+            sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
             error_msg = f"Drive detection failed: {sanitized_error}"
             messagebox.showerror("Drive Detection Error", error_msg)
             self.root.quit()
@@ -215,13 +212,19 @@ class ShuddApp:
         inner_frame.pack(fill=tk.BOTH, expand=True)
         
         
+        # Sanitize drive information to prevent XSS in UI
+        safe_device_id = str(self.boot_drive.get('DeviceID', 'Unknown')).replace('<', '').replace('>', '').replace('&', '')[:50]
+        safe_model = str(self.boot_drive.get('Model', 'Unknown')).replace('<', '').replace('>', '').replace('&', '')[:50]
+        safe_serial = str(self.boot_drive.get('SerialNumber', 'Unknown')).replace('<', '').replace('>', '').replace('&', '')[:50]
+        safe_size = int(self.boot_drive.get('SizeGB', 0)) if isinstance(self.boot_drive.get('SizeGB'), (int, float)) else 0
+        
         warning_text = f"""WARNING: This tool will PERMANENTLY ERASE USER DATA
 on the following drive:
 
-    Drive: {self.boot_drive.get('DeviceID', 'Unknown')}
-    Model: {self.boot_drive.get('Model', 'Unknown')}
-    Serial: {self.boot_drive.get('SerialNumber', 'Unknown')}
-    Size: {self.boot_drive.get('SizeGB', 0)} GB
+    Drive: {safe_device_id}
+    Model: {safe_model}
+    Serial: {safe_serial}
+    Size: {safe_size} GB
 
 Will wipe: User files, downloads, temp files, installed programs
 Will preserve: Windows OS, system files, boot partition
@@ -328,7 +331,7 @@ This action cannot be undone."""
             try:
                 self.execute_purification()
             except Exception as e:
-                sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+                sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
                 self.root.after(0, lambda: messagebox.showerror("Purification Error", f"Critical error: {sanitized_error}"))
                 self.root.after(0, self.root.quit)
         
@@ -505,7 +508,7 @@ This action cannot be undone."""
             
         except Exception as e:
             # Handle any errors during the purification process
-            sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+            sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
             error_msg = f"Purification failed: {sanitized_error}"
             self.root.after(0, lambda: messagebox.showerror("Purification Failed", error_msg))
             self.root.after(0, self.root.quit)
@@ -529,8 +532,10 @@ This action cannot be undone."""
                               font=('Arial', 24, 'bold'), fg='#27ae60', bg='#2c3e50')
         title_label.pack(pady=(0, 30))
         
-        serial = self.boot_drive.get('SerialNumber', 'Unknown') if self.boot_drive else 'Unknown'
-        success_text = f"""User data on drive ({serial}) has been securely wiped.
+        # Sanitize serial number for display
+        raw_serial = self.boot_drive.get('SerialNumber', 'Unknown') if self.boot_drive else 'Unknown'
+        safe_serial = str(raw_serial).replace('<', '').replace('>', '').replace('&', '')[:50]
+        success_text = f"""User data on drive ({safe_serial}) has been securely wiped.
 Windows OS and system files have been preserved.
 
 Your tamper-proof certificate has been saved to your Desktop."""

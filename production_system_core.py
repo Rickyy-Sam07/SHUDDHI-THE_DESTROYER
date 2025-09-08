@@ -100,7 +100,8 @@ class SystemCore:
             self.admin_checked = True
             return is_admin
         except Exception as e:
-            self.logger.error(f"Error checking admin privileges: {e}")
+            sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
+            self.logger.error(f"Error checking admin privileges: {sanitized_error}")
             return False
 
     def elevate_privileges(self) -> None:
@@ -140,12 +141,9 @@ class SystemCore:
         except (OSError, ctypes.WinError) as e:
             raise AdminPrivilegeError(f"Privilege elevation failed: {e}")
         except Exception as e:
-            self.logger.critical(f"Unexpected error during privilege elevation: {e}")
+            sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
+            self.logger.critical(f"Unexpected error during privilege elevation: {sanitized_error}")
             raise AdminPrivilegeError(f"Privilege elevation failed: {e}")
-
-    def ensure_admin_privileges(self) -> None:
-        if not self.check_admin():
-            self.elevate_privileges()
 
     ### ------------------------------------------------------
     ### 2 : Drive info json
@@ -201,7 +199,7 @@ class SystemCore:
                     
                 except Exception as e:
                     # Log individual drive errors but continue enumeration
-                    sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+                    sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
                     self.logger.warning(f"Error processing drive {physical_disk.Index}: {sanitized_error}")
                     continue
             
@@ -325,12 +323,12 @@ class SystemCore:
             
         except (OSError, pywintypes.error) as e:
             # Log specific Windows API errors
-            sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+            sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
             self.logger.error(f"Drive access validation failed for {device_path}: {sanitized_error}")
             return False
         except Exception as e:
             # Log unexpected errors
-            sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+            sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
             self.logger.error(f"Unexpected error validating drive access: {sanitized_error}")
             return False
         finally:
@@ -339,7 +337,7 @@ class SystemCore:
                 try:
                     win32file.CloseHandle(handle)
                 except Exception as e:
-                    sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+                    sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
                     self.logger.error(f"Failed to close handle: {sanitized_error}")
 
     def get_system_info(self) -> Dict[str, Any]:

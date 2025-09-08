@@ -255,13 +255,13 @@ class EmergencyHandler:
                         
             except Exception as e:
                 # Sanitize error messages to prevent log injection
-                sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+                sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
                 self.logger.error(f"Thread cleanup error: {sanitized_error}")
                 
         except Exception as e:
             # Log final cleanup errors but don't raise
             # At this point we're committed to exiting
-            sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+            sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
             self.logger.error(f"Final cleanup error: {sanitized_error}")
     
     def safe_operation_wrapper(self, operation_func, operation_name: str, *args, **kwargs):

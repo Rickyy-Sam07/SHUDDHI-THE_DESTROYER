@@ -30,7 +30,6 @@ import logging
 import subprocess
 import threading
 from typing import Dict, Any, Optional, List
-from pathlib import Path
 from datetime import datetime
 
 try:
@@ -67,34 +66,6 @@ class WipeEngine:
         
         # Emergency abort mechanism - can be set by GUI or signal handlers
         self.abort_flag = threading.Event()
-        
-        # External tool paths (for advanced operations)
-        self.tools_dir = Path("tools")
-        self.nvme_cli_path = self.tools_dir / "nvme.exe"     # NVMe command line interface
-        self.hdparm_path = self.tools_dir / "hdparm.exe"     # Hard disk parameter utility
-        self.openssl_path = self.tools_dir / "openssl.exe"   # Cryptographic operations
-
-    def check_external_tools(self) -> Dict[str, bool]:
-        tools_status = {}
-        
-        # Check nvme-cli
-        try:
-            result = subprocess.run(["nvme", "version"], capture_output=True, text=True, timeout=5)
-            tools_status["nvme-cli"] = result.returncode == 0
-        except:
-            tools_status["nvme-cli"] = False
-        
-        # Check hdparm (Windows version)
-        tools_status["hdparm"] = self.hdparm_path.exists()
-        
-        # Check openssl
-        try:
-            result = subprocess.run(["openssl", "version"], capture_output=True, text=True, timeout=5)
-            tools_status["openssl"] = result.returncode == 0
-        except:
-            tools_status["openssl"] = False
-        
-        return tools_status
 
     def execute_nvme_format(self, drive_path: str, drive_info: Dict[str, Any]) -> Dict[str, Any]:
         """Execute Windows-native NVMe secure erase using diskpart
@@ -137,9 +108,13 @@ class WipeEngine:
             # 'clean all' performs secure erase on drives that support it
             diskpart_script = f"select disk {drive_index}\nclean all\nexit\n"
             
-            # Use full system path to prevent DLL hijacking attacks
-            diskpart_path = os.path.join(os.environ.get('SYSTEMROOT', 'C:\\Windows'), 'System32', 'diskpart.exe')
-            if not os.path.exists(diskpart_path):
+            # Use full system path to prevent DLL hijacking and command injection attacks
+            system_root = os.environ.get('SYSTEMROOT', 'C:\\Windows')
+            # Validate system root path to prevent injection
+            if not system_root or '\n' in system_root or '\r' in system_root or ';' in system_root:
+                raise WipeExecutionError("Invalid system root path detected")
+            diskpart_path = os.path.join(system_root, 'System32', 'diskpart.exe')
+            if not os.path.exists(diskpart_path) or not os.path.isfile(diskpart_path):
                 raise WipeExecutionError("Diskpart not found in system")
             
             try:
@@ -174,7 +149,10 @@ class WipeEngine:
             except subprocess.TimeoutExpired:
                 # Handle timeout by killing process and cleaning up
                 process.kill()
-                process.wait(timeout=5)  # Give process time to die gracefully
+                try:
+                    process.communicate(timeout=5)  # Use communicate() to prevent deadlock
+                except subprocess.TimeoutExpired:
+                    pass  # Process forcefully terminated
                 raise WipeExecutionError("Diskpart command timed out")
                     
         except Exception as e:
@@ -197,8 +175,12 @@ class WipeEngine:
                 raise WipeExecutionError("No accessible partitions found for SSD erase")
             
             # Use full path to prevent command injection
-            cipher_path = os.path.join(os.environ.get('SYSTEMROOT', 'C:\\Windows'), 'System32', 'cipher.exe')
-            if not os.path.exists(cipher_path):
+            system_root = os.environ.get('SYSTEMROOT', 'C:\\Windows')
+            # Validate system root path to prevent injection
+            if not system_root or '\n' in system_root or '\r' in system_root or ';' in system_root:
+                raise WipeExecutionError("Invalid system root path detected")
+            cipher_path = os.path.join(system_root, 'System32', 'cipher.exe')
+            if not os.path.exists(cipher_path) or not os.path.isfile(cipher_path):
                 raise WipeExecutionError("Cipher not found in system")
             
             results = []
@@ -206,7 +188,10 @@ class WipeEngine:
                 drive_letter = partition['drive_letter']
                 
                 # Validate drive letter to prevent injection
-                if not drive_letter.isalpha() or len(drive_letter) != 1:
+                if not drive_letter or not drive_letter.isalpha() or len(drive_letter) != 1:
+                    continue
+                # Additional validation for drive letter
+                if ord(drive_letter.upper()) < ord('A') or ord(drive_letter.upper()) > ord('Z'):
                     continue
                 
                 try:
@@ -223,15 +208,18 @@ class WipeEngine:
                     if process.returncode == 0:
                         results.append(f"Drive {drive_letter}: cipher completed")
                     else:
-                        sanitized_error = stderr.replace('\n', ' ').replace('\r', '')
+                        sanitized_error = stderr.replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
                         self.logger.warning(f"Cipher failed on {drive_letter}: {sanitized_error}")
                         
                 except subprocess.TimeoutExpired:
                     process.kill()
-                    process.wait(timeout=5)
+                    try:
+                        process.communicate(timeout=5)  # Use communicate() to prevent deadlock
+                    except subprocess.TimeoutExpired:
+                        pass  # Process forcefully terminated
                     raise WipeExecutionError(f"Cipher command timed out on drive {drive_letter}")
                 except Exception as e:
-                    sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+                    sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
                     self.logger.warning(f"Cipher error on {drive_letter}: {sanitized_error}")
             
             end_time = datetime.now()
@@ -280,7 +268,7 @@ class WipeEngine:
             
             # Get all partitions on the target drive using WMI
             # This ensures we only wipe partitions on the selected drive
-            partitions = self._get_partition_info(drive_info.get('Index', 0))
+            partitions = self._get_partition_info_for_drive(drive_info.get('Index', 0))
             
             # Track wipe statistics for reporting
             total_wiped = 0    # Total bytes overwritten
@@ -306,11 +294,15 @@ class WipeEngine:
                             if self.abort_flag.is_set():
                                 raise WipeExecutionError("Wipe operation aborted by user")
                     
-                    self.logger.info(f"Completed wiping user data on {drive_letter}:")
+                    # Sanitize drive letter for logging
+                    safe_drive = drive_letter.replace('\n', '').replace('\r', '').replace('\t', '') if drive_letter else 'Unknown'
+                    self.logger.info(f"Completed wiping user data on {safe_drive}:")
                         
                 except Exception as e:
                     # Log partition errors but continue with other partitions
-                    self.logger.warning(f"Could not wipe data on {partition['drive_letter']}: {e}")
+                    safe_drive = partition.get('drive_letter', 'Unknown').replace('\n', '').replace('\r', '').replace('\t', '')
+                    sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
+                    self.logger.warning(f"Could not wipe data on {safe_drive}: {sanitized_error}")
                     continue
             
             end_time = datetime.now()
@@ -329,10 +321,6 @@ class WipeEngine:
             
         except Exception as e:
             raise WipeExecutionError(f"OS-safe data wipe failed: {e}")
-    
-    def _get_partition_info(self, drive_index: int) -> List[Dict[str, Any]]:
-        """Get all partition information (legacy method)"""
-        return self._get_partition_info_for_drive(drive_index)
     
     def _get_partition_info_for_drive(self, drive_index: int) -> List[Dict[str, Any]]:
         """Get partition information for the specified physical drive only
@@ -400,7 +388,7 @@ class WipeEngine:
             
         except Exception as e:
             # Sanitize error messages to prevent log injection
-            sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+            sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
             self.logger.error(f"Could not get partition info for drive {drive_index}: {sanitized_error}")
             raise WipeExecutionError(f"Failed to enumerate partitions for drive {drive_index}: {sanitized_error}")
     
@@ -535,7 +523,7 @@ class WipeEngine:
                                 f.flush()
                         except (PermissionError, OSError) as e:
                             # Log access errors but continue with other files
-                            sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+                            sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
                             self.logger.warning(f"Could not overwrite file {file_path}: {sanitized_error}")
                             continue
                         
@@ -552,12 +540,14 @@ class WipeEngine:
                             
                     except Exception as e:
                         # Log individual file errors but continue operation
-                        sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+                        sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
                         self.logger.warning(f"Could not wipe file {file_path}: {sanitized_error}")
                         continue
         
         except Exception as e:
-            self.logger.error(f"Error wiping directory {directory_path}: {e}")
+            sanitized_path = str(directory_path).replace('\n', '').replace('\r', '').replace('\t', '')[:100]
+        sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
+        self.logger.error(f"Error wiping directory {sanitized_path}: {sanitized_error}")
         
         return total_bytes, files_count
     
@@ -616,7 +606,8 @@ class WipeEngine:
             return result
             
         except Exception as e:
-            self.logger.warning(f"Primary method failed: {e}")
+            sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
+            self.logger.warning(f"Primary method failed: {sanitized_error}")
             
             # Execute fallback method
             try:

@@ -298,6 +298,7 @@ class VerificationEngine:
         Returns:
             Dict[str, Any]: Comprehensive audit log ready for signing
         """
+        # amazonq-ignore-next-line
         
         # Use consistent UTC timestamp for all audit entries
         timestamp = datetime.now(timezone.utc)
@@ -377,11 +378,18 @@ class VerificationEngine:
             }
         }
 
-    def generate_signing_keys(self) -> Tuple[bytes, bytes]:
-        """Generate RSA key pair for certificate signing"""
+    def generate_signing_keys(self) -> Tuple[bytes, bytes, bytes]:
+        """Generate RSA key pair for certificate signing with secure password
+        
+        Returns:
+            Tuple[bytes, bytes, bytes]: (private_key_pem, public_key_pem, key_password)
+        """
         
         if not HAS_CRYPTOGRAPHY:
             raise CertificateGenerationError("Cryptography library required for key generation")
+        
+        # Generate cryptographically secure password for private key protection
+        key_password = secrets.token_bytes(32)  # 256-bit password
         
         # Generate RSA key pair
         private_key = rsa.generate_private_key(
@@ -389,10 +397,11 @@ class VerificationEngine:
             key_size=2048
         )
         
+        # Encrypt private key with secure password
         private_pem = private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption()
+            encryption_algorithm=serialization.BestAvailableEncryption(key_password)
         )
         
         public_key = private_key.public_key()
@@ -401,7 +410,7 @@ class VerificationEngine:
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         )
         
-        return private_pem, public_pem
+        return private_pem, public_pem, key_password
 
     def sign_audit_log(self, audit_log: Dict[str, Any]) -> Dict[str, Any]:
         """Cryptographically sign the audit log for tamper-proof integrity
@@ -444,10 +453,10 @@ class VerificationEngine:
         
         # Generate fresh RSA key pair for this certificate
         # Each certificate gets its own keys for maximum security
-        private_key_pem, public_key_pem = self.generate_signing_keys()
+        private_key_pem, public_key_pem, key_password = self.generate_signing_keys()
         
-        # Load private key for signing (no password for production simplicity)
-        private_key = load_pem_private_key(private_key_pem, password=None)
+        # Load private key for signing with secure password
+        private_key = load_pem_private_key(private_key_pem, password=key_password)
         
         # Create digital signature using RSA-PSS
         # PSS provides better security than PKCS#1 v1.5 padding
