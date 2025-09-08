@@ -52,6 +52,9 @@ class SystemCore:
             logger.addHandler(handler)
             logger.setLevel(logging.INFO)
         return logger
+    ### ------------------------------------------------------
+    ### 1 : Admin Check
+    ### ------------------------------------------------------
 
     def check_admin(self) -> bool:
         try:
@@ -91,6 +94,9 @@ class SystemCore:
         if not self.check_admin():
             self.elevate_privileges()
 
+    ### ------------------------------------------------------
+    ### 2 : Drive info json
+    ### -------------------------------------------------------
     def get_drive_info(self) -> List[Dict[str, Any]]:
         if not wmi:
             raise HardwareDetectionError("WMI library not available for hardware detection.")
@@ -133,6 +139,9 @@ class SystemCore:
         except Exception as e:
             raise HardwareDetectionError(f"Drive enumeration failed: {e}")
 
+    ### -----------------------------------------------
+    ### 3 : System Wiping Tools Check 
+    ### -----------------------------------------------
     def determine_wipe_method(self, drive_info: Dict[str, Any]) -> Dict[str, str]:
         result = {
             "primary_method": "AES_128_CTR",
