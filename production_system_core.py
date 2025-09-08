@@ -81,7 +81,10 @@ class SystemCore:
             
             sys.exit(0)
             
+        except (OSError, ctypes.WinError) as e:
+            raise AdminPrivilegeError(f"Privilege elevation failed: {e}")
         except Exception as e:
+            self.logger.critical(f"Unexpected error during privilege elevation: {e}")
             raise AdminPrivilegeError(f"Privilege elevation failed: {e}")
 
     def ensure_admin_privileges(self) -> None:
@@ -121,7 +124,8 @@ class SystemCore:
                     drives.append(drive_info)
                     
                 except Exception as e:
-                    self.logger.warning(f"Error processing drive {physical_disk.Index}: {e}")
+                    sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+                    self.logger.warning(f"Error processing drive {physical_disk.Index}: {sanitized_error}")
                     continue
             
             return drives
@@ -140,40 +144,40 @@ class SystemCore:
         if not drive_info:
             return result
         
-        model = drive_info.get('Model', '').upper()
-        interface_type = drive_info.get('InterfaceType', '').upper()
-        media_type = drive_info.get('MediaType', '').upper()
+        model_upper = drive_info.get('Model', '').upper()
+        interface_type_upper = drive_info.get('InterfaceType', '').upper()
+        media_type_upper = drive_info.get('MediaType', '').upper()
         
-        # NVMe detection
-        if 'NVME' in interface_type or 'NVME' in model:
+        # Strict NVMe detection - only if explicitly NVMe
+        if ('NVME' in interface_type_upper and interface_type_upper != 'SATA') or 'NVME' in model_upper:
             result = {
                 "primary_method": "NVME_FORMAT_NVM",
                 "fallback_method": "AES_128_CTR",
-                "reasoning": "NVMe interface detected - Format NVM is faster",
+                "reasoning": "Confirmed NVMe interface detected",
                 "drive_category": "NVME"
             }
             
-        # SATA SSD detection
-        elif ('SSD' in model or 'SOLID STATE' in model or 
-              'SATA' in interface_type or 
-              'FIXED' in media_type):
+        # Strict SSD detection - require explicit SSD indicators AND exclude HDDs
+        elif (('SSD' in model_upper or 'SOLID STATE' in model_upper) and 
+              'HDD' not in model_upper and 'HARD DISK' not in model_upper and
+              'SATA' in interface_type_upper and 'FIXED' in media_type_upper):
             result = {
                 "primary_method": "ATA_SECURE_ERASE", 
                 "fallback_method": "AES_128_CTR",
-                "reasoning": "SATA SSD detected - ATA Secure Erase leverages hardware",
+                "reasoning": "Confirmed SATA SSD detected",
                 "drive_category": "SATA_SSD"
             }
             
-        # Other drives (HDD, USB, etc.)
+        # Other drives (HDD, USB, etc.) - default to safe method
         else:
-            is_removable = 'REMOVABLE' in media_type or 'USB' in interface_type
+            is_removable = 'REMOVABLE' in media_type_upper or 'USB' in interface_type_upper
             
             if is_removable:
                 result["drive_category"] = "USB"
-                result["reasoning"] = "Removable/USB drive - AES_128_CTR provides fast, secure method"
+                result["reasoning"] = "Removable/USB drive - using safe AES method"
             else:
                 result["drive_category"] = "HDD"
-                result["reasoning"] = "Traditional HDD - AES_128_CTR provides fast, secure method"
+                result["reasoning"] = "Traditional HDD or uncertain type - using safe AES method"
         
         return result
 
@@ -181,7 +185,12 @@ class SystemCore:
         if not self.check_admin():
             return False
         
+        # Validate drive index range
+        if not isinstance(drive_index, int) or drive_index < 0 or drive_index > 99:
+            return False
+            
         device_path = f"\\\\.\\PhysicalDrive{drive_index}"
+        handle = None
         
         try:
             handle = win32file.CreateFile(
@@ -193,11 +202,23 @@ class SystemCore:
                 0,
                 None
             )
-            win32file.CloseHandle(handle)
             return True
             
-        except Exception:
+        except (OSError, pywintypes.error) as e:
+            sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+            self.logger.error(f"Drive access validation failed for {device_path}: {sanitized_error}")
             return False
+        except Exception as e:
+            sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+            self.logger.error(f"Unexpected error validating drive access: {sanitized_error}")
+            return False
+        finally:
+            if handle:
+                try:
+                    win32file.CloseHandle(handle)
+                except Exception as e:
+                    sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+                    self.logger.error(f"Failed to close handle: {sanitized_error}")
 
     def get_system_info(self) -> Dict[str, Any]:
         try:

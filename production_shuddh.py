@@ -20,6 +20,7 @@ from datetime import datetime
 from production_system_core import SystemCore
 from production_wipe_engine import WipeEngine
 from production_verification_engine import VerificationEngine
+from emergency_handler import emergency_handler
 
 
 class ShuddApp:
@@ -36,15 +37,72 @@ class ShuddApp:
         
         self.boot_drive = None
         self.wipe_decision = None
+        self.wipe_in_progress = False
         
         self.current_screen = "warning"
+        
+        # Setup emergency handling
+        self.setup_emergency_handling()
         
         # Check admin privileges immediately
         if not self.system_core.check_admin():
             messagebox.showerror("Admin Required", "This application requires administrator privileges.")#admin rights ctypes use karke check karenge
             self.system_core.elevate_privileges()
         
+        # Setup emergency handling
+        self.setup_emergency_handling()
+        
         self.setup_ui()
+    
+    def setup_emergency_handling(self):
+        """Setup emergency quit functionality"""
+        # Register cleanup functions
+        emergency_handler.register_cleanup(self.emergency_cleanup)
+        
+        # Bind Escape key for emergency quit
+        self.root.bind('<Escape>', lambda e: self.emergency_quit())
+        
+        # Override window close to check for active operations
+        self.root.protocol("WM_DELETE_WINDOW", self.on_window_close)
+    
+    def emergency_cleanup(self):
+        """Emergency cleanup function"""
+        try:
+            if self.wipe_in_progress:
+                # Signal wipe engine to stop
+                if hasattr(self.wipe_engine, 'abort_flag'):
+                    self.wipe_engine.abort_flag.set()
+                    
+                # Force cleanup of any open file handles
+                if hasattr(self.wipe_engine, '_cleanup_resources'):
+                    self.wipe_engine._cleanup_resources()
+        except Exception as e:
+            # Log error but don't raise - emergency cleanup should not fail
+            print(f"Emergency cleanup error: {e}")
+    
+    def emergency_quit(self):
+        """Trigger emergency quit"""
+        if self.wipe_in_progress:
+            result = messagebox.askyesno(
+                "Emergency Quit", 
+                "Wipe operation is in progress!\n\nForce quit may leave drive in inconsistent state.\n\nAre you sure?"
+            )
+            if not result:
+                return
+        
+        emergency_handler.trigger_emergency_quit("User requested emergency quit")
+    
+    def on_window_close(self):
+        """Handle window close event"""
+        if self.wipe_in_progress:
+            result = messagebox.askyesno(
+                "Operation in Progress", 
+                "Data wipe is currently running.\n\nClosing now may leave your drive in an inconsistent state.\n\nAre you sure you want to quit?"
+            )
+            if not result:
+                return
+        
+        self.root.quit()
         
     def setup_ui(self):
         #Setup the main UI
@@ -62,16 +120,28 @@ class ShuddApp:
         """Screen 1: Warning & Consent Screen   consent is important 😂"""
         try:
             drives = self.system_core.get_drive_info()
-            self.boot_drive = drives[0] if drives else None
-            if self.boot_drive:
-                self.wipe_decision = self.system_core.determine_wipe_method(self.boot_drive)
+            if not drives:
+                raise Exception("No drives detected or invalid drive data")
+                
+            self.boot_drive = drives[0]
+            
+            # Validate drive data
+            if not isinstance(self.boot_drive, dict):
+                raise Exception("Invalid drive information format")
+                
+            required_fields = ['Index', 'Model', 'SerialNumber', 'Size']
+            for field in required_fields:
+                if field not in self.boot_drive:
+                    raise Exception(f"Missing required drive field: {field}")
+            
+            self.wipe_decision = self.system_core.determine_wipe_method(self.boot_drive)
+            
+            if not self.wipe_decision or not isinstance(self.wipe_decision, dict):
+                raise Exception("Failed to determine wipe method")
+                
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to detect drives: {e}")
-            self.root.quit()
-            return
-        
-        if not self.boot_drive:
-            messagebox.showerror("Error", "No drives detected")
+            error_msg = f"Drive detection failed: {str(e)}"
+            messagebox.showerror("Drive Detection Error", error_msg)
             self.root.quit()
             return
         
@@ -92,13 +162,16 @@ class ShuddApp:
         inner_frame.pack(fill=tk.BOTH, expand=True)
         
         
-        warning_text = f"""WARNING: This tool will PERMANENTLY ERASE ALL DATA
+        warning_text = f"""WARNING: This tool will PERMANENTLY ERASE USER DATA
 on the following drive:
 
     Drive: {self.boot_drive.get('DeviceID', 'Unknown')}
     Model: {self.boot_drive.get('Model', 'Unknown')}
     Serial: {self.boot_drive.get('SerialNumber', 'Unknown')}
     Size: {self.boot_drive.get('SizeGB', 0)} GB
+
+Will wipe: User files, downloads, temp files, installed programs
+Will preserve: Windows OS, system files, boot partition
 
 This action cannot be undone."""
         
@@ -151,15 +224,23 @@ This action cannot be undone."""
         self.current_screen = "progress"
         self.setup_ui()
         
-        # the process will start in diff thread
-        threading.Thread(target=self.execute_purification, daemon=True).start()
+        # Start process in thread with proper exception handling
+        def safe_execute_purification():
+            try:
+                self.execute_purification()
+            except Exception as e:
+                sanitized_error = str(e).replace('\n', ' ').replace('\r', '')
+                self.root.after(0, lambda: messagebox.showerror("Purification Error", f"Critical error: {sanitized_error}"))
+                self.root.after(0, self.root.quit)
+        
+        threading.Thread(target=safe_execute_purification, daemon=True).start()
     
     def show_progress_screen(self):
         """Screen 2: Progress Screen"""
         main_frame = tk.Frame(self.root, bg='#2c3e50', padx=40, pady=40)
         main_frame.pack(fill=tk.BOTH, expand=True)
         
-        title_label = tk.Label(main_frame, text="DATA DELETION IN PROGRESS", 
+        title_label = tk.Label(main_frame, text="USER DATA WIPE IN PROGRESS", 
                               font=('Arial', 24, 'bold'), fg='#f39c12', bg='#2c3e50')
         title_label.pack(pady=(0, 30))
         
@@ -233,52 +314,83 @@ This action cannot be undone."""
     
     def execute_purification(self):
         """Execute the actual purification process"""
+        self.wipe_in_progress = True
+        emergency_handler.set_current_operation("Data purification")
+        
         try:
+            # Validate drive info before starting
+            if not self.boot_drive or not isinstance(self.boot_drive, dict):
+                raise Exception("Invalid drive information")
+                
+            drive_index = self.boot_drive.get('Index')
+            if drive_index is None or not isinstance(drive_index, int) or drive_index < 0:
+                raise Exception(f"Invalid drive index: {drive_index}")
+            
             #1: Analyzing drive
-            self.root.after(0, lambda: self.update_stage(0, "active"))
-            self.root.after(0, lambda: self.progress.config(value=10))
+            def update_stage_0():
+                self.update_stage(0, "active")
+                self.progress.config(value=10)
+            self.root.after(0, update_stage_0)
+            
+            # Validate drive access
+            if not self.system_core.validate_drive_access(drive_index):
+                raise Exception(f"Cannot access drive {drive_index}")
             
             #2: Execute wipe
-            self.root.after(0, lambda: self.update_stage(0, "complete"))
-            self.root.after(0, lambda: self.update_stage(1, "active"))
-            self.root.after(0, lambda: self.progress.config(value=25))
+            def update_stage_1():
+                self.update_stage(0, "complete")
+                self.update_stage(1, "active")
+                self.progress.config(value=25)
+            self.root.after(0, update_stage_1)
             
+            # Validate wipe decision
+            if not self.wipe_decision or not isinstance(self.wipe_decision, dict):
+                raise Exception("Invalid wipe method decision")
             
             wipe_result = self.wipe_engine.execute_wipe(self.boot_drive, self.wipe_decision)
             
-            if not wipe_result.get('success', False):
-                raise Exception(f"Wipe failed: {wipe_result.get('error', 'Unknown error')}")
-            
-            self.root.after(0, lambda: self.progress.config(value=70))
+            if not wipe_result or not wipe_result.get('success', False):
+                error_msg = wipe_result.get('error', 'Unknown wipe error') if wipe_result else 'Wipe returned no result'
+                raise Exception(f"Wipe failed: {error_msg}")
             
             #3: Verification
-            self.root.after(0, lambda: self.update_stage(1, "complete"))
-            self.root.after(0, lambda: self.update_stage(2, "active"))
-            
+            def update_stage_2():
+                self.progress.config(value=70)
+                self.update_stage(1, "complete")
+                self.update_stage(2, "active")
+            self.root.after(0, update_stage_2)
             
             verification_result = self.verification_engine.run_phase3_verification(self.boot_drive, wipe_result)
             
-            if not verification_result.get('success', False):
-                raise Exception(f"Verification failed: {verification_result.get('error', 'Unknown error')}")
-            
-            self.root.after(0, lambda: self.progress.config(value=90))
+            if not verification_result or not verification_result.get('success', False):
+                error_msg = verification_result.get('error', 'Unknown verification error') if verification_result else 'Verification returned no result'
+                raise Exception(f"Verification failed: {error_msg}")
             
             #4: Certificate generation
-            self.root.after(0, lambda: self.update_stage(2, "complete"))
-            self.root.after(0, lambda: self.update_stage(3, "active"))
+            def update_stage_3():
+                self.progress.config(value=90)
+                self.update_stage(2, "complete")
+                self.update_stage(3, "active")
+            self.root.after(0, update_stage_3)
             
             # Store results for success screen
             self.verification_result = verification_result
             
-            self.root.after(0, lambda: self.progress.config(value=100))
-            self.root.after(0, lambda: self.update_stage(3, "complete"))
+            def update_final():
+                self.progress.config(value=100)
+                self.update_stage(3, "complete")
+            self.root.after(0, update_final)
             
             # Move to success screen
             self.root.after(1000, self.show_success_screen_transition)
             
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Purification Failed", f"Error: {e}"))
+            error_msg = f"Purification failed: {str(e)}"
+            self.root.after(0, lambda: messagebox.showerror("Purification Failed", error_msg))
             self.root.after(0, self.root.quit)
+        finally:
+            self.wipe_in_progress = False
+            emergency_handler.set_current_operation(None)
     
     def show_success_screen_transition(self):
         """Transition to success screen"""
@@ -291,12 +403,13 @@ This action cannot be undone."""
         main_frame.pack(fill=tk.BOTH, expand=True)
         
         # Title
-        title_label = tk.Label(main_frame, text="ALL THE DATA DELETION IS SUCCESSFUL!", 
+        title_label = tk.Label(main_frame, text="USER DATA WIPE SUCCESSFUL!", 
                               font=('Arial', 24, 'bold'), fg='#27ae60', bg='#2c3e50')
         title_label.pack(pady=(0, 30))
         
         serial = self.boot_drive.get('SerialNumber', 'Unknown') if self.boot_drive else 'Unknown'
-        success_text = f"""Your drive ({serial}) has been successfully and securely wiped.
+        success_text = f"""User data on drive ({serial}) has been securely wiped.
+Windows OS and system files have been preserved.
 
 Your tamper-proof certificate has been saved to your Desktop."""
         

@@ -178,7 +178,9 @@ class VerificationEngine:
                         verification_result: Dict[str, Any]) -> Dict[str, Any]:
         """Create tamper-proof audit log"""
         
-        audit_id = f"SHUDDH-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4).upper()}"
+        # Use single timestamp for consistency
+        timestamp = datetime.now(timezone.utc)
+        audit_id = f"SHUDDH-{timestamp.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4).upper()}"
         
         method = wipe_result.get('method', 'UNKNOWN')
         compliance_mapping = {
@@ -193,7 +195,7 @@ class VerificationEngine:
                 "audit_id": audit_id,
                 "audit_version": "1.0",
                 "generated_by": "Shuddh OS Data Wiper v2.0 Production",
-                "generation_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "generation_timestamp_utc": timestamp.isoformat(),
                 "development_mode": False
             },
             "drive_info": {
@@ -209,8 +211,8 @@ class VerificationEngine:
             "wipe_metadata": {
                 "method_attempted": method,
                 "method_compliant_with": compliance,
-                "timestamp_utc": wipe_result.get('start_time', datetime.now(timezone.utc).isoformat()),
-                "completion_timestamp_utc": wipe_result.get('end_time', datetime.now(timezone.utc).isoformat()),
+                "timestamp_utc": wipe_result.get('start_time', timestamp.isoformat()),
+                "completion_timestamp_utc": wipe_result.get('end_time', timestamp.isoformat()),
                 "execution_duration": wipe_result.get('duration', 'Unknown'),
                 "status": "SUCCESS" if wipe_result.get('success', False) else "FAILED",
                 "primary_method_used": wipe_result.get('primary_method_used', True),
@@ -221,7 +223,7 @@ class VerificationEngine:
                 "verification_method": verification_result.get('verification_method', 'NONE'),
                 "verification_status": verification_result.get('verification_status', 'NOT_PERFORMED'),
                 "verification_timestamp_utc": verification_result.get('verification_timestamp', 
-                                                                   datetime.now(timezone.utc).isoformat()),
+                                                                   timestamp.isoformat()),
                 "verification_hash": verification_result.get('verification_hash', None),
                 "verification_details": verification_result.get('verification_details', 'No verification performed'),
                 "verification_reliable": verification_result.get('verification_reliable', False)
@@ -319,21 +321,38 @@ class VerificationEngine:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Export JSON certificate
-        json_filename = f"Shuddh_Certificate_{certificate_id.split('-')[-1]}_{timestamp}.json"
+        # Validate and sanitize filename
+        safe_id = certificate_id.split('-')[-1].replace('..', '').replace('/', '').replace('\\', '')
+        json_filename = f"Shuddh_Certificate_{safe_id}_{timestamp}.json"
         json_path = self.certs_dir / json_filename
         
-        with open(json_path, 'w', encoding='utf-8') as f:
-            json.dump(signed_certificate, f, indent=2, ensure_ascii=False)
+        # Ensure path is within certs directory
+        if not str(json_path.resolve()).startswith(str(self.certs_dir.resolve())):
+            raise ValueError("Invalid certificate path")
+            
+        try:
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(signed_certificate, f, indent=2, ensure_ascii=False)
+        except (IOError, PermissionError, OSError) as e:
+            raise CertificateGenerationError(f"Failed to save JSON certificate: {e}")
         
         # Export PDF certificate
-        pdf_filename = f"Shuddh_Certificate_{certificate_id.split('-')[-1]}_{timestamp}.pdf"
+        # Validate and sanitize PDF filename
+        pdf_filename = f"Shuddh_Certificate_{safe_id}_{timestamp}.pdf"
         pdf_path = self.certs_dir / pdf_filename
         
-        if HAS_REPORTLAB:
-            self._generate_pdf_certificate(signed_certificate, pdf_path)
-        else:
-            # Fallback to text file if reportlab not available
-            self._generate_text_certificate(signed_certificate, pdf_path)
+        # Ensure path is within certs directory
+        if not str(pdf_path.resolve()).startswith(str(self.certs_dir.resolve())):
+            raise ValueError("Invalid PDF path")
+        
+        try:
+            if HAS_REPORTLAB:
+                self._generate_pdf_certificate(signed_certificate, pdf_path)
+            else:
+                # Fallback to text file if reportlab not available
+                self._generate_text_certificate(signed_certificate, pdf_path)
+        except (IOError, PermissionError, OSError) as e:
+            raise CertificateGenerationError(f"Failed to save PDF certificate: {e}")
         
         return {
             "json_certificate_path": str(json_path),
@@ -452,7 +471,7 @@ CRYPTOGRAPHIC SIGNATURE:
 - Hash: {signed_certificate['cryptographic_signature']['audit_log_hash']}
 - Signature: {signed_certificate['cryptographic_signature']['signature']}
 
-Generated by Shuddh OS Data Wiper v2.0 Production
+Generated by Shuddh OS Data Wiper v2.0 Production - by sambhranta
         """
         
         with open(pdf_path, 'w', encoding='utf-8') as f:
