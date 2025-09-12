@@ -63,43 +63,18 @@ class WipeEngine:
         # Emergency abort mechanism - can be set by GUI or signal handlers
         self.abort_flag = threading.Event()
 
-
-        """Execute selective data wipe preserving OS and partition structure
-        
-        This method implements OS-safe data destruction by:
-        1. Identifying all partitions on the target drive
-        2. Selectively wiping user data directories
-        3. Preserving critical Windows OS files and system directories
-        4. Using cryptographically secure random overwrite patterns
-        
-        The AES-128-CTR method provides NIST SP 800-88 Rev. 1 'Clear' level security
-        by overwriting data with cryptographically strong random patterns.
-        
-        OS Preservation Strategy:
-        - Wipes: Users/, Downloads/, Temp/, Program Files/, etc.
-        - Preserves: Windows/System32/, boot files, drivers, registry
-        
-        Args:
-            drive_path (str): Windows device path (not used directly)
-            drive_info (Dict[str, Any]): Drive information containing Index
-            
-        Returns:
-            Dict[str, Any]: Wipe results including files processed and bytes written
-            
-        Raises:
-            WipeExecutionError: If partition detection or wipe operations fail
-        """
+    def execute_aes_overwrite(self, drive_path: str, drive_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute selective data wipe preserving OS and partition structure"""
         
         try:
             start_time = datetime.now()
             
             # Get all partitions on the target drive using WMI
-            # This ensures we only wipe partitions on the selected drive
             partitions = self._get_partition_info_for_drive(drive_info.get('Index', 0))
             
             # Track wipe statistics for reporting
-            total_wiped = 0    # Total bytes overwritten
-            files_wiped = 0    # Number of files processed
+            total_wiped = 0
+            files_wiped = 0
             
             # Process each partition on the drive
             for partition in partitions:
@@ -392,6 +367,34 @@ class WipeEngine:
         ]
         
         return any(pattern in file_path_lower for pattern in critical_patterns)
+    
+    def _get_drive_letter_from_info(self, drive_info: Dict[str, Any]) -> Optional[str]:
+        """Extract drive letter from drive info for forensic verification"""
+        try:
+            import wmi
+            c = wmi.WMI()
+            
+            drive_index = drive_info.get('Index')
+            if drive_index is None:
+                return None
+            
+            # Find partitions on this drive
+            for partition in c.Win32_DiskPartition():
+                if partition.DiskIndex == drive_index:
+                    # Find logical disks for this partition
+                    for logical_disk in c.Win32_LogicalDisk():
+                        partition_to_logical = c.Win32_LogicalDiskToPartition()
+                        for assoc in partition_to_logical:
+                            if (assoc.Antecedent.DeviceID == partition.DeviceID and 
+                                assoc.Dependent.DeviceID == logical_disk.DeviceID):
+                                device_id = logical_disk.DeviceID
+                                if device_id and len(device_id) == 2 and device_id[1] == ':':
+                                    return device_id[0].upper()
+            
+            return None
+            
+        except Exception:
+            return None
 
     def execute_wipe(self, drive_info: Dict[str, Any], wipe_decision: Dict[str, str]) -> Dict[str, Any]:
         """Execute OS-safe data wipe method"""
@@ -400,8 +403,49 @@ class WipeEngine:
         start_time = datetime.now()
         
         try:
+            # Generate pre-wipe checksums for forensic verification
+            from forensic_checksum_verifier import ForensicChecksumVerifier
+            forensic_verifier = ForensicChecksumVerifier()
+            
+            # Get drive letter for checksum calculation
+            drive_letter = self._get_drive_letter_from_info(drive_info)
+            if drive_letter:
+                try:
+                    pre_wipe_checksums = forensic_verifier.generate_pre_wipe_checksums(drive_letter)
+                    self.logger.info(f"Pre-wipe forensic checksums calculated: {pre_wipe_checksums['summary']['total_files']} files")
+                except Exception as e:
+                    self.logger.warning(f"Could not generate pre-wipe checksums: {e}")
+                    pre_wipe_checksums = None
+            else:
+                pre_wipe_checksums = None
+            
             # Execute OS-safe AES overwrite method
             result = self.execute_aes_overwrite("", drive_info)
+            
+            # Generate post-wipe checksums for forensic verification
+            if drive_letter and pre_wipe_checksums:
+                try:
+                    post_wipe_checksums = forensic_verifier.generate_post_wipe_checksums(drive_letter)
+                    forensic_comparison = forensic_verifier.compare_checksums(drive_letter)
+                    
+                    # Generate forensic report
+                    forensic_report_path = forensic_verifier.generate_forensic_report(drive_letter)
+                    
+                    # Add forensic data to result
+                    result["forensic_verification"] = {
+                        "pre_wipe_files": pre_wipe_checksums['summary']['total_files'],
+                        "post_wipe_files": post_wipe_checksums['summary']['total_files'],
+                        "files_destroyed": forensic_comparison['forensic_verification']['files_destroyed'],
+                        "size_reduced": forensic_comparison['forensic_verification']['size_reduction'],
+                        "verification_status": "VERIFIED" if forensic_comparison['forensic_verification']['data_destruction_verified'] else "FAILED",
+                        "forensic_report_path": forensic_report_path
+                    }
+                    
+                    self.logger.info(f"Forensic verification: {result['forensic_verification']['files_destroyed']} files destroyed")
+                    
+                except Exception as e:
+                    self.logger.warning(f"Could not complete forensic verification: {e}")
+                    result["forensic_verification"] = {"error": str(e)}
             
             # Add timing information
             end_time = datetime.now()

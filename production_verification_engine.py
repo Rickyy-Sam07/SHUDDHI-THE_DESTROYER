@@ -591,10 +591,30 @@ class VerificationEngine:
         c.drawString(70, y_pos, f"Completion: {wipe_info['completion_timestamp_utc']}")
         y_pos -= 40
         
+        # Forensic verification details
+        if 'forensic_verification' in wipe_info:
+            forensic_info = wipe_info['forensic_verification']
+            c.setFont("Helvetica-Bold", 14)
+            c.drawString(50, y_pos, "FORENSIC VERIFICATION")
+            y_pos -= 30
+            
+            c.setFont("Helvetica", 10)
+            c.drawString(70, y_pos, f"Files Destroyed: {forensic_info.get('files_destroyed', 0):,}")
+            y_pos -= 20
+            c.drawString(70, y_pos, f"Data Wiped: {forensic_info.get('size_reduced', 0):,} bytes")
+            y_pos -= 20
+            c.drawString(70, y_pos, f"Verification Status: {forensic_info.get('verification_status', 'UNKNOWN')}")
+            y_pos -= 20
+            if forensic_info.get('forensic_report_path'):
+                report_name = Path(forensic_info['forensic_report_path']).name
+                c.drawString(70, y_pos, f"Forensic Report: {report_name}")
+                y_pos -= 20
+            y_pos -= 20
+        
         # Verification
         verify_info = signed_certificate["audit_log"]["verification_metadata"]
         c.setFont("Helvetica-Bold", 14)
-        c.drawString(50, y_pos, "VERIFICATION")
+        c.drawString(50, y_pos, "CERTIFICATE VERIFICATION")
         y_pos -= 30
         
         c.setFont("Helvetica", 10)
@@ -642,6 +662,11 @@ WIPE DETAILS:
 - Method: {signed_certificate['audit_log']['wipe_metadata']['method_attempted']}
 - Compliance: {signed_certificate['audit_log']['wipe_metadata']['method_compliant_with']}
 - Status: {signed_certificate['audit_log']['wipe_metadata']['status']}
+
+FORENSIC VERIFICATION:
+- Files Destroyed: {signed_certificate['audit_log']['wipe_metadata'].get('forensic_verification', {}).get('files_destroyed', 'N/A')}
+- Data Wiped: {signed_certificate['audit_log']['wipe_metadata'].get('forensic_verification', {}).get('size_reduced', 'N/A')} bytes
+- Verification Status: {signed_certificate['audit_log']['wipe_metadata'].get('forensic_verification', {}).get('verification_status', 'N/A')}
 
 VERIFICATION:
 - Method: {signed_certificate['audit_log']['verification_metadata']['verification_method']}

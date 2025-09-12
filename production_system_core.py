@@ -192,7 +192,8 @@ class SystemCore:
                         "Status": physical_disk.Status or "Unknown",             # Drive health status
                         "Partitions": physical_disk.Partitions or 0,             # Number of partitions
                         "BytesPerSector": physical_disk.BytesPerSector or 512,   # Sector size
-                        "TotalSectors": physical_disk.TotalSectors or 0          # Total sector count
+                        "TotalSectors": physical_disk.TotalSectors or 0,          # Total sector count
+                        "DriveType": self._determine_drive_type(physical_disk)   # USB, Internal, System
                     }
                     
                     drives.append(drive_info)
@@ -207,6 +208,56 @@ class SystemCore:
             
         except Exception as e:
             raise HardwareDetectionError(f"Drive enumeration failed: {e}")
+    
+    def _determine_drive_type(self, disk):
+        """Determine if drive is USB, internal, or system drive"""
+        try:
+            interface = str(disk.InterfaceType or '').upper()
+            model = str(disk.Model or '').upper()
+            
+            # Check for USB drives
+            if 'USB' in interface or 'USB' in model:
+                return 'USB'
+            
+            # Check for removable drives
+            if hasattr(disk, 'MediaLoaded') and not disk.MediaLoaded:
+                return 'Removable'
+            
+            # Default to internal
+            return 'Internal'
+            
+        except Exception:
+            return 'Unknown'
+    
+    def get_system_drive_index(self):
+        """Get the index of the system/boot drive"""
+        try:
+            c = wmi.WMI()
+            system_drive = os.environ.get('SYSTEMDRIVE', 'C:').replace(':', '')
+            
+            for drive in self.get_drive_info():
+                try:
+                    for partition in c.Win32_DiskPartition():
+                        if partition.DiskIndex == drive.get('Index'):
+                            for logical_disk in c.Win32_LogicalDisk():
+                                if (logical_disk.DeviceID.replace(':', '') == system_drive and
+                                    logical_disk.DriveType == 3):
+                                    partition_to_logical = c.Win32_LogicalDiskToPartition()
+                                    for assoc in partition_to_logical:
+                                        if (assoc.Antecedent.DeviceID == partition.DeviceID and 
+                                            assoc.Dependent.DeviceID == logical_disk.DeviceID):
+                                            return drive['Index']
+                except Exception:
+                    continue
+            
+            return 0  # Fallback to first drive
+            
+        except Exception:
+            return 0
+    
+    def is_system_drive(self, drive_index):
+        """Check if the given drive index is the system drive"""
+        return drive_index == self.get_system_drive_index()
 
     ### -----------------------------------------------
     ### 3 : System Wiping Tools Check 

@@ -56,7 +56,11 @@ class ShuddApp:
         self.wipe_in_progress = False   # Flag to track active wipe operations
         
         # UI state management - controls which screen is displayed
-        self.current_screen = "warning"  # Start with warning/consent screen
+        self.current_screen = "drive_selection"  # Start with drive selection screen
+        
+        # Drive selection state
+        self.available_drives = []
+        self.selected_drive = None
         
         # Setup emergency quit system before any operations
         self.setup_emergency_handling()
@@ -140,60 +144,113 @@ class ShuddApp:
         for widget in self.root.winfo_children():
             widget.destroy()
             
-        if self.current_screen == "warning":
+        if self.current_screen == "drive_selection":
+            self.show_drive_selection_screen()
+        elif self.current_screen == "warning":
             self.show_warning_screen()
         elif self.current_screen == "progress":
             self.show_progress_screen()
         elif self.current_screen == "success":
             self.show_success_screen()
     
+    def show_drive_selection_screen(self):
+        """Screen 0: Drive Selection Screen
+        
+        Allows users to select which drive to wipe from all available drives.
+        Shows drive type, size, and safety warnings for system drives.
+        """
+        try:
+            # Get all available drives
+            self.available_drives = self.system_core.get_drive_info()
+            if not self.available_drives:
+                raise Exception("No drives detected")
+                
+        except Exception as e:
+            sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
+            messagebox.showerror("Drive Detection Error", f"Failed to detect drives: {sanitized_error}")
+            self.root.quit()
+            return
+        
+        main_frame = tk.Frame(self.root, bg='#2c3e50', padx=40, pady=40)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        title_label = tk.Label(main_frame, text="SELECT DRIVE TO WIPE", 
+                              font=('Arial', 24, 'bold'), fg='#e74c3c', bg='#2c3e50')
+        title_label.pack(pady=(0, 30))
+        
+        # Drive list frame
+        drives_frame = tk.Frame(main_frame, bg='#34495e', padx=20, pady=20)
+        drives_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
+        
+        self.drive_var = tk.StringVar()
+        
+        system_drive_index = self.system_core.get_system_drive_index()
+        
+        for drive in self.available_drives:
+            drive_index = drive.get('Index', -1)
+            drive_type = drive.get('DriveType', 'Unknown')
+            model = str(drive.get('Model', 'Unknown'))[:30]
+            size_gb = drive.get('SizeGB', 0)
+            
+            # Create drive option text
+            drive_text = f"Drive {drive_index}: {model} ({size_gb} GB) - {drive_type}"
+            
+            # Add system drive warning
+            if drive_index == system_drive_index:
+                drive_text += " [SYSTEM DRIVE - WILL PRESERVE OS]"
+                color = '#f39c12'  # Orange for system drive
+            elif drive_type == 'USB':
+                color = '#27ae60'  # Green for USB
+            else:
+                color = '#3498db'  # Blue for internal
+            
+            radio = tk.Radiobutton(drives_frame, text=drive_text, variable=self.drive_var,
+                                 value=str(drive_index), font=('Arial', 11),
+                                 fg=color, bg='#34495e', selectcolor='#2c3e50',
+                                 command=self.on_drive_selected)
+            radio.pack(anchor=tk.W, pady=5)
+        
+        # Continue button
+        self.continue_button = tk.Button(main_frame, text="CONTINUE TO WARNING",
+                                       font=('Arial', 14, 'bold'), fg='white', bg='#3498db',
+                                       padx=30, pady=10, state=tk.DISABLED,
+                                       command=self.continue_to_warning)
+        self.continue_button.pack(pady=20)
+    
+    def on_drive_selected(self):
+        """Handle drive selection"""
+        selected_index = int(self.drive_var.get())
+        self.selected_drive = next((d for d in self.available_drives if d['Index'] == selected_index), None)
+        
+        if self.selected_drive:
+            self.continue_button.config(state=tk.NORMAL)
+    
+    def continue_to_warning(self):
+        """Continue to warning screen with selected drive"""
+        if not self.selected_drive:
+            return
+            
+        # Set the selected drive as the target
+        self.boot_drive = self.selected_drive
+        
+        # Determine wipe method for selected drive
+        try:
+            self.wipe_decision = self.system_core.determine_wipe_method(self.boot_drive)
+            if not self.wipe_decision:
+                raise Exception("Failed to determine wipe method")
+        except Exception as e:
+            sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
+            messagebox.showerror("Error", f"Failed to analyze drive: {sanitized_error}")
+            return
+        
+        self.current_screen = "warning"
+        self.setup_ui()
+    
     def show_warning_screen(self):
         """Screen 1: Warning & Consent Screen
         
-        This is the first screen users see. It:
-        1. Detects available drives using WMI
-        2. Identifies the boot drive (where Windows is installed)
-        3. Determines the optimal wipe method based on drive type
-        4. Displays warnings and requires user consent
-        5. Shows drive information and wipe method details
+        Shows warnings and requires user consent for the selected drive.
         """
-        try:
-            # Get list of all physical drives using WMI (Windows Management Instrumentation)
-            drives = self.system_core.get_drive_info()
-            if not drives or not isinstance(drives, list):
-                raise Exception("No drives detected or invalid drive data")
-            
-            # Find the actual boot drive (where Windows OS is installed)
-            # This is critical to ensure we're wiping the correct drive
-            self.boot_drive = self._find_boot_drive(drives)
-            if not self.boot_drive:
-                # Fallback to first drive if boot drive detection fails
-                self.boot_drive = drives[0]
-            
-            # Validate that we have complete drive information
-            if not isinstance(self.boot_drive, dict):
-                raise Exception("Invalid drive information format")
-                
-            # Ensure all required fields are present for safe operation
-            required_fields = ['Index', 'Model', 'SerialNumber', 'Size']
-            for field in required_fields:
-                if field not in self.boot_drive:
-                    raise Exception(f"Missing required drive field: {field}")
-            
-            # Determine the best wipe method based on drive characteristics
-            # NVMe drives use FORMAT_NVM, SATA SSDs use SECURE_ERASE, others use AES overwrite
-            self.wipe_decision = self.system_core.determine_wipe_method(self.boot_drive)
-            
-            if not self.wipe_decision or not isinstance(self.wipe_decision, dict):
-                raise Exception("Failed to determine wipe method")
-                
-        except Exception as e:
-            # Sanitize error messages to prevent injection attacks in UI
-            sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
-            error_msg = f"Drive detection failed: {sanitized_error}"
-            messagebox.showerror("Drive Detection Error", error_msg)
-            self.root.quit()
-            return
         
         
         main_frame = tk.Frame(self.root, bg='#2c3e50', padx=40, pady=40)
@@ -217,17 +274,34 @@ class ShuddApp:
         safe_model = str(self.boot_drive.get('Model', 'Unknown')).replace('<', '').replace('>', '').replace('&', '')[:50]
         safe_serial = str(self.boot_drive.get('SerialNumber', 'Unknown')).replace('<', '').replace('>', '').replace('&', '')[:50]
         safe_size = int(self.boot_drive.get('SizeGB', 0)) if isinstance(self.boot_drive.get('SizeGB'), (int, float)) else 0
+        drive_type = self.boot_drive.get('DriveType', 'Unknown')
         
-        warning_text = f"""WARNING: This tool will PERMANENTLY ERASE USER DATA
+        # Different warning text based on drive type
+        if self.system_core.is_system_drive(self.boot_drive.get('Index', -1)):
+            warning_text = f"""WARNING: This tool will PERMANENTLY ERASE USER DATA
+on the SYSTEM DRIVE:
+
+    Drive: {safe_device_id}
+    Model: {safe_model}
+    Serial: {safe_serial}
+    Size: {safe_size} GB
+    Type: {drive_type}
+
+Will wipe: User files, downloads, temp files, installed programs
+Will preserve: Windows OS, system files, boot partition
+
+This action cannot be undone."""
+        else:
+            warning_text = f"""WARNING: This tool will PERMANENTLY ERASE ALL DATA
 on the following drive:
 
     Drive: {safe_device_id}
     Model: {safe_model}
     Serial: {safe_serial}
     Size: {safe_size} GB
+    Type: {drive_type}
 
-Will wipe: User files, downloads, temp files, installed programs
-Will preserve: Windows OS, system files, boot partition
+Will wipe: ALL DATA on this drive
 
 This action cannot be undone."""
         
@@ -255,58 +329,25 @@ This action cannot be undone."""
                                         command=self.check_consent)
         understand_check.pack(anchor=tk.W, pady=5)
         
+        # Back button to return to drive selection
+        back_button = tk.Button(main_frame, text="← BACK TO DRIVE SELECTION",
+                              font=('Arial', 12), fg='white', bg='#95a5a6',
+                              padx=20, pady=5, command=self.back_to_drive_selection)
+        back_button.pack(pady=(10, 0))
+        
         # Start button
         self.start_button = tk.Button(main_frame, text="I AGREE, START PURIFICATION",
                                     font=('Arial', 14, 'bold'), fg='white', bg='#e74c3c',
                                     padx=30, pady=10, state=tk.DISABLED,
                                     command=self.start_purification)
-        self.start_button.pack(pady=30)
+        self.start_button.pack(pady=(20, 30))
     
-    def _find_boot_drive(self, drives):
-        """Find the actual boot drive using Windows system directory
-        
-        This method identifies which physical drive contains the Windows OS installation.
-        It uses WMI to map logical drives (C:, D:, etc.) to physical drives.
-        
-        Args:
-            drives: List of physical drive information from get_drive_info()
-            
-        Returns:
-            dict: Drive information for the boot drive, or first drive as fallback
-        """
-        try:
-            import wmi
-            c = wmi.WMI()
-            
-            # Get the system drive letter (usually C:) from environment
-            system_drive = os.environ.get('SYSTEMDRIVE', 'C:').replace(':', '')
-            
-            # Map logical drives to physical drives using WMI associations
-            for drive in drives:
-                try:
-                    # Check each partition on this physical drive
-                    for partition in c.Win32_DiskPartition():
-                        if partition.DiskIndex == drive.get('Index'):
-                            # Check each logical disk (drive letter)
-                            for logical_disk in c.Win32_LogicalDisk():
-                                if (logical_disk.DeviceID.replace(':', '') == system_drive and
-                                    logical_disk.DriveType == 3):  # DriveType 3 = Fixed disk
-                                    # Verify the logical disk is on this partition
-                                    partition_to_logical = c.Win32_LogicalDiskToPartition()
-                                    for assoc in partition_to_logical:
-                                        if (assoc.Antecedent.DeviceID == partition.DeviceID and 
-                                            assoc.Dependent.DeviceID == logical_disk.DeviceID):
-                                            return drive
-                except Exception:
-                    # Skip drives that can't be accessed or have errors
-                    continue
-            
-            # Fallback: return first drive if boot drive detection fails
-            return drives[0] if drives else None
-            
-        except Exception:
-            # If WMI fails entirely, return first drive as safe fallback
-            return drives[0] if drives else None
+    def back_to_drive_selection(self):
+        """Return to drive selection screen"""
+        self.current_screen = "drive_selection"
+        self.setup_ui()
+    
+
     
     def check_consent(self):
         """Enable start only when both checkboxes are checked"""
@@ -487,6 +528,9 @@ This action cannot be undone."""
                 error_msg = verification_result.get('error', 'Unknown verification error') if verification_result else 'Verification returned no result'
                 raise Exception(f"Verification failed: {error_msg}")
             
+            # Store wipe result in verification result for GUI access
+            verification_result['wipe_result'] = wipe_result
+            
             # STAGE 4: Certificate generation for audit trail
             def update_stage_3():
                 self.progress.config(value=90)
@@ -545,6 +589,35 @@ Your tamper-proof certificate has been saved to your Desktop."""
                                justify=tk.CENTER)
         success_label.pack(pady=(0, 30))
         
+        # Forensic verification results
+        if hasattr(self, 'verification_result') and self.verification_result:
+            wipe_result = self.verification_result.get('wipe_result', {})
+            forensic_data = wipe_result.get('forensic_verification', {})
+            
+            if forensic_data and 'files_destroyed' in forensic_data:
+                forensic_frame = tk.Frame(main_frame, bg='#27ae60', padx=3, pady=3)
+                forensic_frame.pack(fill=tk.X, pady=(0, 20))
+                
+                forensic_inner = tk.Frame(forensic_frame, bg='#2c3e50', padx=15, pady=15)
+                forensic_inner.pack(fill=tk.BOTH, expand=True)
+                
+                forensic_title = tk.Label(forensic_inner, text="FORENSIC VERIFICATION",
+                                        font=('Arial', 14, 'bold'), fg='#27ae60', bg='#2c3e50')
+                forensic_title.pack()
+                
+                files_destroyed = forensic_data.get('files_destroyed', 0)
+                size_reduced = forensic_data.get('size_reduced', 0)
+                verification_status = forensic_data.get('verification_status', 'UNKNOWN')
+                
+                forensic_text = f"""Files Destroyed: {files_destroyed:,}
+Data Wiped: {size_reduced:,} bytes
+Verification: {verification_status}"""
+                
+                forensic_label = tk.Label(forensic_inner, text=forensic_text,
+                                        font=('Arial', 11), fg='white', bg='#2c3e50',
+                                        justify=tk.LEFT)
+                forensic_label.pack()
+        
         # Certificate files
         if hasattr(self, 'verification_result') and self.verification_result:
             export_result = self.verification_result.get('export_result', {})
@@ -563,11 +636,37 @@ Your tamper-proof certificate has been saved to your Desktop."""
                     pdf_label = tk.Label(main_frame, text=pdf_filename,
                                        font=('Arial', 11, 'bold'), fg='#3498db', bg='#2c3e50')
                     pdf_label.pack()
+                
+                # Show forensic report if available
+                wipe_result = self.verification_result.get('wipe_result', {})
+                forensic_data = wipe_result.get('forensic_verification', {})
+                forensic_report_path = forensic_data.get('forensic_report_path', '')
+                
+                if forensic_report_path:
+                    forensic_filename = Path(forensic_report_path).name
+                    forensic_report_label = tk.Label(main_frame, text=forensic_filename,
+                                                   font=('Arial', 11, 'bold'), fg='#e67e22', bg='#2c3e50')
+                    forensic_report_label.pack()
         
  
-        final_label = tk.Label(main_frame, 
-                             text="You have successfully deleted all the data on your drive (the data is not recoverable). Stay secure!",
-                             font=('Arial', 12), fg='white', bg='#2c3e50')
+        # Show different message based on forensic verification
+        if hasattr(self, 'verification_result') and self.verification_result:
+            wipe_result = self.verification_result.get('wipe_result', {})
+            forensic_data = wipe_result.get('forensic_verification', {})
+            verification_status = forensic_data.get('verification_status', 'UNKNOWN')
+            
+            if verification_status == 'VERIFIED':
+                final_text = "Forensic verification confirms: All data has been cryptographically verified as destroyed and is unrecoverable. Stay secure!"
+                color = '#27ae60'
+            else:
+                final_text = "Data wipe completed. Forensic verification report available for review. Stay secure!"
+                color = '#f39c12'
+        else:
+            final_text = "You have successfully deleted all the data on your drive (the data is not recoverable). Stay secure!"
+            color = 'white'
+        
+        final_label = tk.Label(main_frame, text=final_text,
+                             font=('Arial', 12), fg=color, bg='#2c3e50')
         final_label.pack(pady=30)
         
      
