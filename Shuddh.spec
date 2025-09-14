@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['production_shuddh.py'],
+    ['shuddh.py'],
     pathex=[],
     binaries=[],
     datas=[],

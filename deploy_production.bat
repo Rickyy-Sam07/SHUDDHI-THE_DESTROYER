@@ -16,11 +16,8 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo Creating application icon...
-python create_icon.py
-
-echo Building executable...
-python build_executable.py
+echo Building Shuddh executable...
+pyinstaller --onefile --windowed --icon=shuddh_icon.ico --name=Shuddh shuddh.py
 if %errorlevel% neq 0 (
     echo Build failed
     pause

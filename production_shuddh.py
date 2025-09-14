@@ -579,10 +579,18 @@ This action cannot be undone."""
         # Sanitize serial number for display
         raw_serial = self.boot_drive.get('SerialNumber', 'Unknown') if self.boot_drive else 'Unknown'
         safe_serial = str(raw_serial).replace('<', '').replace('>', '').replace('&', '')[:50]
+        
+        # Get certificate ID for display
+        cert_id = "Unknown"
+        if hasattr(self, 'verification_result') and self.verification_result:
+            export_result = self.verification_result.get('export_result', {})
+            cert_id = export_result.get('certificate_id', 'Unknown')
+        
         success_text = f"""User data on drive ({safe_serial}) has been securely wiped.
 Windows OS and system files have been preserved.
 
-Your tamper-proof certificate has been saved to your Desktop."""
+Certificate ID: {cert_id}
+Tamper-proof certificates saved to Desktop."""
         
         success_label = tk.Label(main_frame, text=success_text,
                                font=('Arial', 12), fg='white', bg='#2c3e50',
@@ -618,24 +626,38 @@ Verification: {verification_status}"""
                                         justify=tk.LEFT)
                 forensic_label.pack()
         
-        # Certificate files
+        # Certificate files with path information
         if hasattr(self, 'verification_result') and self.verification_result:
             export_result = self.verification_result.get('export_result', {})
             if export_result:
+                # Certificate path frame
+                cert_frame = tk.Frame(main_frame, bg='#34495e', padx=15, pady=15)
+                cert_frame.pack(fill=tk.X, pady=(0, 20))
+                
+                cert_title = tk.Label(cert_frame, text="CERTIFICATES SAVED TO DESKTOP:",
+                                    font=('Arial', 12, 'bold'), fg='#3498db', bg='#34495e')
+                cert_title.pack()
+                
+                # Desktop path
+                desktop_path = str(Path.home() / "Desktop")
+                path_label = tk.Label(cert_frame, text=f"Location: {desktop_path}",
+                                    font=('Arial', 10), fg='#bdc3c7', bg='#34495e')
+                path_label.pack(pady=(5, 10))
+                
                 json_path = export_result.get('json_certificate_path', '')
                 pdf_path = export_result.get('pdf_certificate_path', '')
                 
                 if json_path:
                     json_filename = Path(json_path).name
-                    json_label = tk.Label(main_frame, text=json_filename,
-                                        font=('Arial', 11, 'bold'), fg='#3498db', bg='#2c3e50')
-                    json_label.pack()
+                    json_label = tk.Label(cert_frame, text=f"📄 {json_filename}",
+                                        font=('Arial', 10, 'bold'), fg='#3498db', bg='#34495e')
+                    json_label.pack(anchor=tk.W, padx=10)
                 
                 if pdf_path:
                     pdf_filename = Path(pdf_path).name
-                    pdf_label = tk.Label(main_frame, text=pdf_filename,
-                                       font=('Arial', 11, 'bold'), fg='#3498db', bg='#2c3e50')
-                    pdf_label.pack()
+                    pdf_label = tk.Label(cert_frame, text=f"📋 {pdf_filename}",
+                                       font=('Arial', 10, 'bold'), fg='#3498db', bg='#34495e')
+                    pdf_label.pack(anchor=tk.W, padx=10)
                 
                 # Show forensic report if available
                 wipe_result = self.verification_result.get('wipe_result', {})
@@ -644,9 +666,9 @@ Verification: {verification_status}"""
                 
                 if forensic_report_path:
                     forensic_filename = Path(forensic_report_path).name
-                    forensic_report_label = tk.Label(main_frame, text=forensic_filename,
-                                                   font=('Arial', 11, 'bold'), fg='#e67e22', bg='#2c3e50')
-                    forensic_report_label.pack()
+                    forensic_report_label = tk.Label(cert_frame, text=f"🔍 {forensic_filename}",
+                                                   font=('Arial', 10, 'bold'), fg='#e67e22', bg='#34495e')
+                    forensic_report_label.pack(anchor=tk.W, padx=10)
         
  
         # Show different message based on forensic verification

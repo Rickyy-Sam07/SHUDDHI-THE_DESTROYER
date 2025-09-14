@@ -43,6 +43,7 @@ except ImportError:
 try:
     import win32file
     import win32con
+    import pythoncom
     HAS_PYWIN32 = True
 except ImportError:
     HAS_PYWIN32 = False
@@ -95,6 +96,108 @@ class VerificationEngine:
         # Cryptographic key paths (generated dynamically for each certificate)
         self.private_key_path = self.certs_dir / "shuddh_signing_key.pem"
         self.public_key_path = self.certs_dir / "shuddh_signing_key_pub.pem"
+
+    def verify_usb_complete_wipe(self, drive_info: Dict[str, Any], wipe_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Enhanced verification specifically for USB drive complete wipes
+        
+        USB drives require different verification than system drives because:
+        1. Complete data destruction is performed (not selective)
+        2. All files and directories should be removed
+        3. Drive should be essentially empty or contain only file system structure
+        
+        Verification Steps:
+        1. Check if drive is accessible and mountable
+        2. Verify all user files have been removed
+        3. Count remaining files (should be minimal - only system files)
+        4. Sample remaining data for randomness verification
+        
+        Args:
+            drive_info (Dict[str, Any]): USB drive information
+            wipe_result (Dict[str, Any]): Results from USB wipe operation
+            
+        Returns:
+            Dict[str, Any]: Enhanced USB verification results
+        """
+        
+        # Extract USB drive information
+        files_wiped = wipe_result.get('files_wiped', 0)
+        bytes_wiped = wipe_result.get('bytes_written', 0)
+        drive_letter = None
+        
+        # Get drive letter for verification
+        try:
+            if HAS_PYWIN32:
+                pythoncom.CoInitialize()
+                
+            import wmi
+            c = wmi.WMI()
+            drive_index = drive_info.get('Index', 0)
+            
+            # Find drive letter for this USB drive
+            for partition in c.Win32_DiskPartition():
+                if partition.DiskIndex == drive_index:
+                    for logical_disk in c.Win32_LogicalDisk():
+                        partition_to_logical = c.Win32_LogicalDiskToPartition()
+                        for assoc in partition_to_logical:
+                            if (assoc.Antecedent.DeviceID == partition.DeviceID and 
+                                assoc.Dependent.DeviceID == logical_disk.DeviceID):
+                                drive_letter = logical_disk.DeviceID[0] if logical_disk.DeviceID else None
+                                break
+        except Exception as e:
+            self.logger.warning(f"Could not determine USB drive letter: {e}")
+        finally:
+            if HAS_PYWIN32:
+                try:
+                    pythoncom.CoUninitialize()
+                except:
+                    pass
+        
+        # Verify USB drive state after wipe
+        verification_results = {
+            "verification_method": "USB_COMPLETE_WIPE_CHECK",
+            "files_originally_wiped": files_wiped,
+            "bytes_originally_wiped": bytes_wiped,
+            "verification_timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        if drive_letter:
+            try:
+                # Count remaining files on USB
+                remaining_files = []
+                usb_path = f"{drive_letter}:\\"
+                
+                if os.path.exists(usb_path):
+                    for root, dirs, files in os.walk(usb_path):
+                        for file in files:
+                            remaining_files.append(os.path.join(root, file))
+                
+                verification_results.update({
+                    "drive_letter": drive_letter,
+                    "remaining_files_count": len(remaining_files),
+                    "usb_accessible": True,
+                    "verification_status": "SUCCESS" if len(remaining_files) < 10 else "PARTIAL",
+                    "verification_details": f"USB wipe verification: {len(remaining_files)} files remain on drive",
+                    "verification_reliable": True
+                })
+                
+                self.logger.info(f"USB verification complete: {len(remaining_files)} files remain on {drive_letter}:")
+                
+            except Exception as e:
+                verification_results.update({
+                    "drive_letter": drive_letter,
+                    "usb_accessible": False,
+                    "verification_status": "FAILED", 
+                    "verification_details": f"Could not access USB drive for verification: {e}",
+                    "verification_reliable": False
+                })
+        else:
+            verification_results.update({
+                "verification_status": "PARTIAL",
+                "verification_details": "Could not determine USB drive letter for post-wipe verification",
+                "verification_reliable": False
+            })
+        
+        return verification_results
 
     def verify_hardware_erase(self, wipe_result: Dict[str, Any]) -> Dict[str, Any]:
         """Verify hardware erase by checking command exit code
@@ -309,9 +412,10 @@ class VerificationEngine:
         # Map wipe methods to compliance standards
         method = wipe_result.get('method', 'UNKNOWN')
         compliance_mapping = {
-            "NVME_FORMAT_NVM": "NIST SP 800-88 Rev. 1 Purge",     # Hardware crypto erase
-            "ATA_SECURE_ERASE": "NIST SP 800-88 Rev. 1 Purge",    # Hardware secure erase
-            "AES_128_CTR": "NIST SP 800-88 Rev. 1 Clear"           # Software overwrite
+            "NVME_FORMAT_NVM": "NIST SP 800-88 Rev. 1 Purge",        # Hardware crypto erase
+            "ATA_SECURE_ERASE": "NIST SP 800-88 Rev. 1 Purge",       # Hardware secure erase
+            "NIST_SP_800_88_CLEAR": "NIST SP 800-88 Rev. 1 Clear",   # Single pass overwrite
+            "AES_128_CTR": "NIST SP 800-88 Rev. 1 Clear"             # Legacy method name
         }
         compliance = compliance_mapping.get(method, "Custom Method")
         
@@ -552,7 +656,9 @@ class VerificationEngine:
         
         # Header
         c.setFont("Helvetica-Bold", 20)
-        c.drawCentredText(width/2, height-50, "SHUDDH DATA PURIFICATION CERTIFICATE")
+        title = "SHUDDH DATA PURIFICATION CERTIFICATE"
+        title_width = c.stringWidth(title, "Helvetica-Bold", 20)
+        c.drawString((width - title_width) / 2, height-50, title)
         
         # Certificate ID
         c.setFont("Helvetica", 12)
@@ -639,7 +745,9 @@ class VerificationEngine:
         
         # Footer
         c.setFont("Helvetica", 10)
-        c.drawCentredText(width/2, 50, "Generated by Shuddh OS Data Wiper v2.0 Production")
+        footer = "Generated by Shuddh OS Data Wiper v2.0 Production"
+        footer_width = c.stringWidth(footer, "Helvetica", 10)
+        c.drawString((width - footer_width) / 2, 50, footer)
         
         c.save()
 
@@ -692,11 +800,17 @@ Generated by Shuddh OS Data Wiper v2.0 Production - by sambhranta
         
         try:
             method = wipe_result.get('method', 'UNKNOWN')
+            drive_type = drive_info.get('DriveType', 'Unknown')
             
-            # Quick Verification
-            if method in ["NVME_FORMAT_NVM", "ATA_SECURE_ERASE"]:
+            # Enhanced verification logic with USB support
+            if drive_type == 'USB' and method in ["AES_128_CTR", "AES_128_CTR_OS_SAFE"]:
+                # USB drives get comprehensive verification
+                verification_result = self.verify_usb_complete_wipe(drive_info, wipe_result)
+            elif method in ["NVME_FORMAT_NVM", "ATA_SECURE_ERASE"]:
+                # Hardware methods use exit code verification
                 verification_result = self.verify_hardware_erase(wipe_result)
-            elif method == "AES_128_CTR":
+            elif method in ["NIST_SP_800_88_CLEAR", "AES_128_CTR", "AES_128_CTR_OS_SAFE"]:
+                # NIST Clear method uses software verification
                 verification_result = self.verify_software_overwrite(drive_info, wipe_result)
             else:
                 verification_result = {

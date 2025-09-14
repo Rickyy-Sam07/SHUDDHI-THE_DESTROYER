@@ -35,6 +35,7 @@ try:
     import win32api
     import win32con
     import pywintypes
+    import pythoncom
     HAS_PYWIN32 = True
 except ImportError:
     HAS_PYWIN32 = False
@@ -138,7 +139,7 @@ class SystemCore:
             # Exit this non-elevated process
             sys.exit(0)
             
-        except (OSError, ctypes.WinError) as e:
+        except OSError as e:
             raise AdminPrivilegeError(f"Privilege elevation failed: {e}")
         except Exception as e:
             sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
@@ -165,6 +166,10 @@ class SystemCore:
             raise HardwareDetectionError("WMI library not available for hardware detection.")
         
         try:
+            # Initialize COM for this thread to fix WMI threading issues
+            if HAS_PYWIN32:
+                pythoncom.CoInitialize()
+            
             # Initialize WMI connection to local machine
             c = wmi.WMI()
             drives = []
@@ -208,6 +213,13 @@ class SystemCore:
             
         except Exception as e:
             raise HardwareDetectionError(f"Drive enumeration failed: {e}")
+        finally:
+            # Clean up COM
+            if HAS_PYWIN32:
+                try:
+                    pythoncom.CoUninitialize()
+                except:
+                    pass
     
     def _determine_drive_type(self, disk):
         """Determine if drive is USB, internal, or system drive"""
@@ -232,6 +244,10 @@ class SystemCore:
     def get_system_drive_index(self):
         """Get the index of the system/boot drive"""
         try:
+            # Initialize COM for this thread to fix WMI threading issues
+            if HAS_PYWIN32:
+                pythoncom.CoInitialize()
+                
             c = wmi.WMI()
             system_drive = os.environ.get('SYSTEMDRIVE', 'C:').replace(':', '')
             
@@ -254,6 +270,13 @@ class SystemCore:
             
         except Exception:
             return 0
+        finally:
+            # Clean up COM
+            if HAS_PYWIN32:
+                try:
+                    pythoncom.CoUninitialize()
+                except:
+                    pass
     
     def is_system_drive(self, drive_index):
         """Check if the given drive index is the system drive"""
@@ -371,7 +394,7 @@ class SystemCore:
             )
             return True
             
-        except (OSError, pywintypes.error) as e:
+        except (OSError, Exception) as e:
             # Log specific Windows API errors
             sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
             self.logger.error(f"Drive access validation failed for {device_path}: {sanitized_error}")
