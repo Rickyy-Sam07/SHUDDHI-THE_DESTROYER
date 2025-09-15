@@ -193,6 +193,10 @@ class WipeEngine:
                             wiped_bytes, wiped_count = self._wipe_usb_files(usb_files)
                             total_wiped += wiped_bytes
                             files_wiped += wiped_count
+                            
+                            # Additional USB cleanup
+                            self._wipe_free_space(drive_letter)
+                            
                             self.logger.info(f"USB Drive {drive_letter}: Complete wipe - {wiped_count} files destroyed")
                     else:
                         # SYSTEM DRIVE SELECTIVE WIPE: Preserve OS functionality
@@ -205,6 +209,11 @@ class WipeEngine:
                                 wiped_bytes, wiped_count = self._wipe_directory_contents(wipe_path)
                                 total_wiped += wiped_bytes
                                 files_wiped += wiped_count
+                        
+                        # Comprehensive system cleanup for C drive
+                        if drive_letter.upper() == 'C':
+                            system_wiped = self._wipe_system_files(drive_letter)
+                            total_wiped += system_wiped
                     
                     # Check for emergency abort signal
                     if self.abort_flag.is_set():
@@ -308,14 +317,20 @@ class WipeEngine:
             return False
     
     def _get_wipe_paths(self, drive_letter: str) -> List[str]:
-        """Get OS-safe wipe paths for system drives"""
+        """Get comprehensive OS-safe wipe paths for system drives"""
         return [
             f"{drive_letter}:\\Users",
             f"{drive_letter}:\\Program Files",
             f"{drive_letter}:\\Program Files (x86)",
             f"{drive_letter}:\\ProgramData",
             f"{drive_letter}:\\Temp",
-            f"{drive_letter}:\\Windows\\Temp"
+            f"{drive_letter}:\\Windows\\Temp",
+            f"{drive_letter}:\\Windows\\Logs",
+            f"{drive_letter}:\\Windows\\Prefetch",
+            f"{drive_letter}:\\Windows\\SoftwareDistribution\\Download",
+            f"{drive_letter}:\\Windows\\System32\\LogFiles",
+            f"{drive_letter}:\\Windows\\Panther",
+            f"{drive_letter}:\\Recovery"
         ]
     
     def _get_all_usb_content(self, drive_letter: str) -> List[str]:
@@ -818,6 +833,86 @@ class WipeEngine:
                         continue
         except:
             pass
+    
+    def _wipe_system_files(self, drive_letter: str) -> int:
+        """Comprehensive OS-safe system file wiping"""
+        total_wiped = 0
+        
+        # Critical system files that can be safely wiped
+        system_files = [
+            f"{drive_letter}:\\hiberfil.sys",
+            f"{drive_letter}:\\pagefile.sys", 
+            f"{drive_letter}:\\swapfile.sys"
+        ]
+        
+        # Wipe system files
+        for sys_file in system_files:
+            try:
+                if os.path.exists(sys_file):
+                    size = self._aes_overwrite_file(sys_file)
+                    total_wiped += size
+            except Exception:
+                continue
+        
+        # Delete volume shadow copies
+        self._delete_shadow_copies()
+        
+        # Clear system restore points
+        self._clear_system_restore()
+        
+        # Wipe NTFS journal
+        self._wipe_ntfs_journal(drive_letter)
+        
+        # Deep registry cleanup
+        self._deep_registry_cleanup()
+        
+        return total_wiped
+    
+    def _delete_shadow_copies(self):
+        """Delete all volume shadow copies"""
+        try:
+            subprocess.run('vssadmin delete shadows /all /quiet', shell=True, capture_output=True)
+        except Exception:
+            pass
+    
+    def _clear_system_restore(self):
+        """Clear system restore points"""
+        try:
+            subprocess.run('vssadmin resize shadowstorage /for=C: /on=C: /maxsize=1MB', shell=True, capture_output=True)
+            subprocess.run('vssadmin resize shadowstorage /for=C: /on=C: /maxsize=UNBOUNDED', shell=True, capture_output=True)
+        except Exception:
+            pass
+    
+    def _wipe_ntfs_journal(self, drive_letter: str):
+        """Wipe NTFS change journal"""
+        try:
+            subprocess.run(f'fsutil usn deletejournal /d {drive_letter}:', shell=True, capture_output=True)
+        except Exception:
+            pass
+    
+    def _deep_registry_cleanup(self):
+        """Deep registry cleanup for user traces"""
+        cleanup_keys = [
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs",
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\RunMRU",
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\TypedPaths",
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\WordWheelQuery"
+        ]
+        
+        for key_path in cleanup_keys:
+            try:
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+                # Clear all values in the key
+                i = 0
+                while True:
+                    try:
+                        value_name, _, _ = winreg.EnumValue(key, i)
+                        winreg.DeleteValue(key, value_name)
+                    except OSError:
+                        break
+                winreg.CloseKey(key)
+            except Exception:
+                continue
     
     def scan_and_clean_footprints(self, drive_letter: str) -> Dict[str, Any]:
         """Scan for digital footprints and clean them"""
