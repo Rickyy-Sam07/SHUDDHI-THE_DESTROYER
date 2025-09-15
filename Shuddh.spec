@@ -35,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['shuddh_icon.ico'],
+    icon=['shuddh_warning_icon.ico'],
 )
