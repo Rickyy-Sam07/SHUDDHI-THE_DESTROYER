@@ -186,21 +186,18 @@ class WipeEngine:
                 try:
                     # Check if this is a USB drive for comprehensive wiping
                     if self._is_usb_drive(drive_letter):
-                        # USB BLOCK-LEVEL WIPE: Complete device destruction
-                        block_result = self.wipe_usb_block_level(drive_letter, "NIST_CLEAR")
-                        if block_result["success"]:
-                            total_wiped += block_result["bytes_wiped"]
-                            files_wiped += 1  # Entire device wiped
-                            self.logger.info(f"USB Drive {drive_letter}: Block-level wipe completed")
-                        else:
-                            # Fallback to file-level if block access fails
-                            usb_files = self._get_all_usb_content(drive_letter)
-                            if usb_files:
-                                wiped_bytes, wiped_count = self._wipe_usb_files(usb_files)
-                                total_wiped += wiped_bytes
-                                files_wiped += wiped_count
-                                self._wipe_free_space(drive_letter)
-                                self.logger.info(f"USB Drive {drive_letter}: File-level fallback - {wiped_count} files")
+                        # USB COMPREHENSIVE WIPE: Get ALL files on USB
+                        usb_files = self._get_all_usb_content(drive_letter)
+                        if usb_files:
+                            # Perform complete USB data destruction
+                            wiped_bytes, wiped_count = self._wipe_usb_files(usb_files)
+                            total_wiped += wiped_bytes
+                            files_wiped += wiped_count
+                            
+                            # Additional USB cleanup
+                            self._wipe_free_space(drive_letter)
+                            
+                            self.logger.info(f"USB Drive {drive_letter}: Complete wipe - {wiped_count} files destroyed")
                     else:
                         # SYSTEM DRIVE SELECTIVE WIPE: Preserve OS functionality
                         wipe_paths = self._get_wipe_paths(drive_letter)
@@ -318,115 +315,6 @@ class WipeEngine:
             return drive_type == 2  # DRIVE_REMOVABLE
         except:
             return False
-    
-    def _get_physical_drive_number(self, drive_letter: str) -> str:
-        """Get physical drive number for block-level access"""
-        try:
-            import wmi
-            if HAS_PYWIN32:
-                pythoncom.CoInitialize()
-            
-            c = wmi.WMI()
-            for disk in c.Win32_LogicalDiskToPartition():
-                if disk.Dependent.DeviceID == f"{drive_letter}:":
-                    partition = disk.Antecedent
-                    for disk_drive in c.Win32_DiskDriveToDiskPartition():
-                        if disk_drive.Dependent.DeviceID == partition.DeviceID:
-                            drive_num = disk_drive.Antecedent.DeviceID.split('\\')[-1]
-                            return drive_num
-        except:
-            pass
-        finally:
-            if HAS_PYWIN32:
-                try:
-                    pythoncom.CoUninitialize()
-                except:
-                    pass
-        return None
-    
-    def wipe_usb_block_level(self, drive_letter: str, method: str = "NIST_CLEAR") -> Dict[str, Any]:
-        """Complete USB drive wiping with block-level access"""
-        try:
-            if not self._is_usb_drive(drive_letter):
-                return {"success": False, "error": "Not a USB drive", "bytes_wiped": 0}
-            
-            # Get physical drive number for block-level access
-            physical_drive = self._get_physical_drive_number(drive_letter)
-            if not physical_drive:
-                return {"success": False, "error": "Cannot access physical drive", "bytes_wiped": 0}
-            
-            # Block-level wiping for complete destruction
-            total_wiped = self._block_level_wipe(physical_drive, method)
-            
-            return {
-                "success": True,
-                "method": f"{method} (Block-level)",
-                "bytes_wiped": total_wiped,
-                "status": f"USB drive {drive_letter}: completely wiped with {method}"
-            }
-            
-        except Exception as e:
-            return {"success": False, "error": str(e), "bytes_wiped": 0}
-    
-    def _block_level_wipe(self, physical_drive: str, method: str) -> int:
-        """Perform block-level wiping of entire drive"""
-        try:
-            drive_path = f"\\\\.\\{physical_drive}"
-            
-            # Open drive for raw access
-            handle = win32file.CreateFile(
-                drive_path,
-                win32con.GENERIC_READ | win32con.GENERIC_WRITE,
-                win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
-                None,
-                win32con.OPEN_EXISTING,
-                0,
-                None
-            )
-            
-            # Get drive size
-            drive_size = win32file.GetFileSize(handle)
-            if drive_size == -1:
-                win32file.CloseHandle(handle)
-                return 0
-            
-            # Multi-pass overwriting based on method
-            passes = self._get_wipe_passes(method)
-            block_size = 1024 * 1024  # 1MB blocks
-            total_wiped = 0
-            
-            for pass_num, pattern in enumerate(passes):
-                win32file.SetFilePointer(handle, 0, win32con.FILE_BEGIN)
-                
-                for offset in range(0, drive_size, block_size):
-                    remaining = min(block_size, drive_size - offset)
-                    
-                    if isinstance(pattern, int):
-                        data = bytes([pattern]) * remaining
-                    else:
-                        # Random data
-                        data = get_random_bytes(remaining)
-                    
-                    win32file.WriteFile(handle, data)
-                    total_wiped += remaining
-                
-                # Force write to disk
-                win32file.FlushFileBuffers(handle)
-            
-            win32file.CloseHandle(handle)
-            return total_wiped
-            
-        except Exception:
-            return 0
-    
-    def _get_wipe_passes(self, method: str) -> List:
-        """Get wipe patterns for different methods"""
-        if method == "DOD_5220_22_M":
-            return [0x00, 0xFF, "random"]
-        elif method == "AFSSI_5020":
-            return [0x00, 0xFF, "random", 0x00, 0xFF, "random"]
-        else:  # NIST_CLEAR
-            return ["random"]
     
     def _get_wipe_paths(self, drive_letter: str) -> List[str]:
         """Get comprehensive OS-safe wipe paths for system drives"""
@@ -567,16 +455,11 @@ class WipeEngine:
                 drive_letter = partition['drive_letter']
                 try:
                     if self._is_usb_drive(drive_letter):
-                        block_result = self.wipe_usb_block_level(drive_letter, "DOD_5220_22_M")
-                        if block_result["success"]:
-                            total_wiped += block_result["bytes_wiped"]
-                            files_wiped += 1
-                        else:
-                            usb_files = self._get_all_usb_content(drive_letter)
-                            if usb_files:
-                                wiped_bytes, wiped_count = self._dod_wipe_files(usb_files)
-                                total_wiped += wiped_bytes
-                                files_wiped += wiped_count
+                        usb_files = self._get_all_usb_content(drive_letter)
+                        if usb_files:
+                            wiped_bytes, wiped_count = self._dod_wipe_files(usb_files)
+                            total_wiped += wiped_bytes
+                            files_wiped += wiped_count
                     else:
                         wipe_paths = self._get_wipe_paths(drive_letter)
                         for wipe_path in wipe_paths:
@@ -611,16 +494,11 @@ class WipeEngine:
                 drive_letter = partition['drive_letter']
                 try:
                     if self._is_usb_drive(drive_letter):
-                        block_result = self.wipe_usb_block_level(drive_letter, "AFSSI_5020")
-                        if block_result["success"]:
-                            total_wiped += block_result["bytes_wiped"]
-                            files_wiped += 1
-                        else:
-                            usb_files = self._get_all_usb_content(drive_letter)
-                            if usb_files:
-                                wiped_bytes, wiped_count = self._afssi_wipe_files(usb_files)
-                                total_wiped += wiped_bytes
-                                files_wiped += wiped_count
+                        usb_files = self._get_all_usb_content(drive_letter)
+                        if usb_files:
+                            wiped_bytes, wiped_count = self._afssi_wipe_files(usb_files)
+                            total_wiped += wiped_bytes
+                            files_wiped += wiped_count
                     else:
                         wipe_paths = self._get_wipe_paths(drive_letter)
                         for wipe_path in wipe_paths:
@@ -1042,23 +920,21 @@ class WipeEngine:
             findings = []
             cleaned_count = 0
             
-            # Standard footprint scanning
+            # Scan registry for USB traces
             registry_findings = self._scan_registry_footprints(drive_letter)
             findings.extend(registry_findings)
             
+            # Scan recent files
             recent_findings = self._scan_recent_files_footprints(drive_letter)
             findings.extend(recent_findings)
             
+            # Scan prefetch files
             prefetch_findings = self._scan_prefetch_footprints(drive_letter)
             findings.extend(prefetch_findings)
             
+            # Scan jump lists
             jumplist_findings = self._scan_jumplist_footprints()
             findings.extend(jumplist_findings)
-            
-            # SSD-specific footprint scanning
-            if self._is_ssd_drive(drive_letter):
-                ssd_findings = self._scan_ssd_specific_footprints(drive_letter)
-                findings.extend(ssd_findings)
             
             # Clean all found footprints
             for finding in findings:
@@ -1068,10 +944,6 @@ class WipeEngine:
             # Additional cleanup
             self._clean_event_logs()
             self._clean_temp_files()
-            
-            # SSD-specific cleanup
-            if self._is_ssd_drive(drive_letter):
-                self._clean_ssd_specific_traces(drive_letter)
             
             return {
                 "success": True,
@@ -1267,75 +1139,5 @@ class WipeEngine:
             thumbcache_path = Path.home() / "AppData/Local/Microsoft/Windows/Explorer"
             for thumb_file in thumbcache_path.glob("thumbcache_*.db"):
                 thumb_file.unlink()
-        except Exception:
-            pass
-    
-    def _scan_ssd_specific_footprints(self, drive_letter: str) -> List[Dict[str, Any]]:
-        """Scan SSD-specific traces that survive standard deletion"""
-        findings = []
-        
-        # SSD SMART logs contain access patterns
-        try:
-            import subprocess
-            result = subprocess.run(f'wmic diskdrive get model,serialnumber', 
-                                  shell=True, capture_output=True, text=True)
-            if drive_letter in result.stdout:
-                findings.append({
-                    "type": "ssd_smart",
-                    "location": "SMART logs",
-                    "details": f"SSD SMART data may contain access patterns for {drive_letter}"
-                })
-        except:
-            pass
-        
-        # Windows Storage Spaces logs
-        storage_logs = Path("C:/Windows/System32/LogFiles/StorageSpaces")
-        if storage_logs.exists():
-            for log_file in storage_logs.glob("*.etl"):
-                findings.append({
-                    "type": "storage_log",
-                    "location": str(log_file),
-                    "details": "Storage Spaces log file"
-                })
-        
-        # SSD firmware logs (vendor-specific)
-        try:
-            result = subprocess.run('nvme list', shell=True, capture_output=True, text=True)
-            if result.returncode == 0:
-                findings.append({
-                    "type": "nvme_log",
-                    "location": "NVMe firmware",
-                    "details": "NVMe firmware may contain internal logs"
-                })
-        except:
-            pass
-        
-        return findings
-    
-    def _clean_ssd_specific_traces(self, drive_letter: str):
-        """Clean SSD-specific traces"""
-        try:
-            # Clear Storage Spaces logs
-            storage_logs = Path("C:/Windows/System32/LogFiles/StorageSpaces")
-            if storage_logs.exists():
-                for log_file in storage_logs.glob("*.etl"):
-                    try:
-                        log_file.unlink()
-                    except:
-                        pass
-            
-            # Clear disk management logs
-            disk_logs = Path("C:/Windows/System32/LogFiles/Disk")
-            if disk_logs.exists():
-                for log_file in disk_logs.glob("*.log"):
-                    try:
-                        log_file.unlink()
-                    except:
-                        pass
-            
-            # Force TRIM on SSD
-            subprocess.run(f'fsutil behavior set DisableDeleteNotify 0', shell=True, capture_output=True)
-            subprocess.run(f'cipher /w:{drive_letter}\\', shell=True, capture_output=True, timeout=60)
-            
         except Exception:
             pass

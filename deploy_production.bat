@@ -17,7 +17,7 @@ if %errorlevel% neq 0 (
 )
 
 echo Building Shuddh executable...
-pyinstaller --onefile --windowed --icon=shuddh_warning_icon.ico --name=Shuddh shuddh.py
+pyinstaller --onefile --windowed --icon=shuddh_icon.ico --name=Shuddh shuddh.py
 if %errorlevel% neq 0 (
     echo Build failed
     pause
