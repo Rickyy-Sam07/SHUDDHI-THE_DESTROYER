@@ -19,6 +19,8 @@ try:
     from production_wipe_engine import WipeEngine, WipeExecutionError
     from production_verification_engine import VerificationEngine
     from emergency_handler import EmergencyHandler
+    from report_generator import ReportGenerator
+    from checksum_verifier import ChecksumVerifier
 except ImportError as e:
     print(f"Import Error: {e}")
     sys.exit(1)
@@ -92,6 +94,7 @@ class ShuddGUI:
         self.wipe_engine = None
         self.verification_engine = None
         self.emergency_handler = EmergencyHandler()
+        self.report_generator = ReportGenerator()
         
         # State tracking
         self.selected_drive = None
@@ -403,12 +406,100 @@ Description: {self.selected_method['description']}"""
             # Determine wipe method
             wipe_method = self.system_core.determine_wipe_method(self.selected_drive)
             
+            # === REPORT GENERATION: Collect data BEFORE wipe ===
+            print(f"\n📊 Collecting drive information before wipe...")
+            self.report_generator.collect_drive_info_before(self.selected_drive)
+            
+            # Get drive letter from the collected data
+            drive_letter = self.report_generator.report_data.get("drive_info_before", {}).get("drive_letter")
+            
+            if drive_letter:
+                print(f"📍 Detected drive letter: {drive_letter}")
+            else:
+                print(f"⚠️  No drive letter found in drive info")
+            
+            # Calculate pre-wipe checksum (if possible for the drive type)
+            print(f"🔐 Calculating pre-wipe checksum...")
+            pre_wipe_checksum = None
+            post_wipe_checksum = None
+            checksum_verifier = None
+            
+            if drive_letter:
+                try:
+                    checksum_verifier = ChecksumVerifier(drive_letter)
+                    pre_wipe_checksum = checksum_verifier.calculate_pre_wipe_checksum()
+                    print(f"✓ Pre-wipe checksum calculated successfully")
+                except Exception as e:
+                    print(f"⚠️  Could not calculate pre-wipe checksum: {str(e)[:100]}")
+                    pre_wipe_checksum = {
+                        'checksum': 'N/A',
+                        'timestamp': datetime.now().isoformat(),
+                        'status': 'FAILED',
+                        'error': str(e)
+                    }
+            else:
+                print(f"⚠️  No drive letter found, skipping checksum calculation")
+                pre_wipe_checksum = {
+                    'checksum': 'N/A',
+                    'timestamp': datetime.now().isoformat(),
+                    'status': 'SKIPPED'
+                }
+            
             # Execute wipe using selected method
             drive_path = self.selected_drive['DeviceID']
             method_id = self.selected_method['method_id']
             result = self.wipe_engine.execute_wipe_method(method_id, drive_path, self.selected_drive)
             
             if result['success']:
+                # === REPORT GENERATION: Collect data AFTER wipe ===
+                print(f"\n📊 Collecting drive information after wipe...")
+                self.report_generator.collect_drive_info_after(self.selected_drive)
+                
+                # Calculate post-wipe checksum
+                print(f"🔐 Calculating post-wipe checksum...")
+                if drive_letter and checksum_verifier:
+                    try:
+                        post_wipe_checksum = checksum_verifier.calculate_post_wipe_checksum()
+                        print(f"✓ Post-wipe checksum calculated successfully")
+                    except Exception as e:
+                        print(f"⚠️  Could not calculate post-wipe checksum: {str(e)[:100]}")
+                        post_wipe_checksum = {
+                            'checksum': 'N/A',
+                            'timestamp': datetime.now().isoformat(),
+                            'status': 'FAILED',
+                            'error': str(e)
+                        }
+                else:
+                    post_wipe_checksum = {
+                        'checksum': 'N/A',
+                        'timestamp': datetime.now().isoformat(),
+                        'status': 'SKIPPED'
+                    }
+                
+                # Add checksum verification to report
+                self.report_generator.add_checksum_verification(pre_wipe_checksum, post_wipe_checksum)
+                
+                # Add wipe process information
+                self.report_generator.add_wipe_process_info(
+                    result, 
+                    self.selected_method['name'],
+                    method_id
+                )
+                
+                # Generate deletion proof
+                print(f"📊 Generating data deletion proof...")
+                self.report_generator.generate_data_deletion_proof()
+                
+                # Save report
+                print(f"📝 Generating comprehensive report...")
+                report_path = self.report_generator.save_report(self.selected_drive)
+                
+                # Print report location to console
+                print(f"\n✅ ═══════════════════════════════════════════════════════")
+                print(f"✅ Comprehensive report saved to:")
+                print(f"✅ {report_path}")
+                print(f"✅ ═══════════════════════════════════════════════════════\n")
+                
                 # Get Desktop path
                 desktop_path = str(Path.home() / "Desktop")
                 
@@ -416,6 +507,7 @@ Description: {self.selected_method['description']}"""
                 success_msg = (f"Wipe operation completed successfully!\n\n"
                               f"Files wiped: {result['files_wiped']:,}\n"
                               f"Data destroyed: {result['bytes_written']:,} bytes\n\n"
+                              f"Report saved to:\n{report_path}\n\n"
                               f"Certificate Location:\n"
                               f"Desktop: {desktop_path}\n\n")
                 
