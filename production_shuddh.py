@@ -27,6 +27,8 @@ from production_system_core import SystemCore
 from production_wipe_engine import WipeEngine
 from production_verification_engine import VerificationEngine
 from emergency_handler import emergency_handler
+from checksum_verifier import ChecksumVerifier
+from report_generator import ReportGenerator
 
 
 class ShuddApp:
@@ -49,6 +51,7 @@ class ShuddApp:
         self.system_core = SystemCore(development_mode=False)  # Hardware detection and admin management
         self.wipe_engine = WipeEngine(development_mode=False)   # Data destruction engine
         self.verification_engine = VerificationEngine(development_mode=False)  # Certificate generation
+        self.report_generator = ReportGenerator()  # Comprehensive report generation
         
         # Application state variables
         self.boot_drive = None          # Selected drive information
@@ -462,9 +465,12 @@ This action cannot be undone."""
         
         This is the core function that orchestrates the complete data wipe workflow:
         1. Drive analysis and validation
-        2. Data wipe execution using determined method
-        3. Verification of wipe completion
-        4. Certificate generation for audit trail
+        2. Pre-wipe checksum and drive info collection
+        3. Data wipe execution using determined method
+        4. Post-wipe checksum and drive info collection
+        5. Verification of wipe completion
+        6. Certificate generation for audit trail
+        7. Comprehensive report generation
         
         Runs in a separate thread to prevent UI freezing during long operations.
         Updates progress bar and stage indicators throughout the process.
@@ -473,8 +479,12 @@ This action cannot be undone."""
         self.wipe_in_progress = True
         emergency_handler.set_current_operation("Data purification")
         
+        # Initialize variables for report generation
+        pre_wipe_checksum = {}
+        post_wipe_checksum = {}
+        
         try:
-            # STAGE 1: Pre-flight validation
+            # STAGE 1: Pre-flight validation and pre-wipe data collection
             # Ensure we have valid drive information before starting destructive operations
             if not self.boot_drive or not isinstance(self.boot_drive, dict):
                 raise Exception("Invalid drive information")
@@ -486,8 +496,24 @@ This action cannot be undone."""
             # Update UI: Stage 1 - Analyzing drive
             def update_stage_0():
                 self.update_stage(0, "active")
-                self.progress.config(value=10)
+                self.progress.config(value=5)
             self.root.after(0, update_stage_0)
+            
+            # Collect drive information BEFORE wipe
+            print("\n📊 Collecting drive information before wipe...")
+            self.report_generator.collect_drive_info_before(self.boot_drive)
+            
+            # Calculate pre-wipe checksum
+            print("🔢 Calculating pre-wipe checksum...")
+            drive_letter = self.report_generator._get_drive_letter(drive_index)
+            if drive_letter:
+                checksum_verifier = ChecksumVerifier(drive_letter)
+                pre_wipe_checksum = checksum_verifier.calculate_pre_wipe_checksum()
+            
+            # Update progress
+            def update_stage_0_progress():
+                self.progress.config(value=15)
+            self.root.after(0, update_stage_0_progress)
             
             # Validate that we can actually access the target drive
             # This prevents errors during the actual wipe operation
@@ -507,6 +533,7 @@ This action cannot be undone."""
             
             # Execute the actual data wipe using the determined method
             # This is where the destructive operation happens
+            print(f"\n🔥 Executing wipe using {self.wipe_decision.get('primary_method', 'Unknown')} method...")
             wipe_result = self.wipe_engine.execute_wipe(self.boot_drive, self.wipe_decision)
             
             # Verify wipe completed successfully
@@ -514,14 +541,36 @@ This action cannot be undone."""
                 error_msg = wipe_result.get('error', 'Unknown wipe error') if wipe_result else 'Wipe returned no result'
                 raise Exception(f"Wipe failed: {error_msg}")
             
-            # STAGE 3: Verification of wipe completion
+            print(f"✓ Wipe completed: {wipe_result.get('status', 'Unknown')}")
+            
+            # STAGE 3: Post-wipe data collection and verification
             def update_stage_2():
-                self.progress.config(value=70)
+                self.progress.config(value=60)
                 self.update_stage(1, "complete")
                 self.update_stage(2, "active")
             self.root.after(0, update_stage_2)
             
+            # Collect drive information AFTER wipe
+            print("\n📊 Collecting drive information after wipe...")
+            self.report_generator.collect_drive_info_after(self.boot_drive)
+            
+            # Calculate post-wipe checksum
+            print("🔢 Calculating post-wipe checksum...")
+            if drive_letter:
+                post_wipe_checksum = checksum_verifier.calculate_post_wipe_checksum()
+                
+                # Compare checksums
+                print("🔍 Comparing checksums...")
+                checksum_comparison = checksum_verifier.compare_checksums()
+                print(f"Checksum verification: {checksum_comparison.get('verification_status', 'Unknown')}")
+            
+            # Update progress
+            def update_stage_2_progress():
+                self.progress.config(value=70)
+            self.root.after(0, update_stage_2_progress)
+            
             # Run verification to confirm data was actually destroyed
+            print("\n🔍 Running verification...")
             verification_result = self.verification_engine.run_phase3_verification(self.boot_drive, wipe_result)
             
             if not verification_result or not verification_result.get('success', False):
@@ -531,12 +580,39 @@ This action cannot be undone."""
             # Store wipe result in verification result for GUI access
             verification_result['wipe_result'] = wipe_result
             
-            # STAGE 4: Certificate generation for audit trail
+            # STAGE 4: Report and certificate generation
             def update_stage_3():
-                self.progress.config(value=90)
+                self.progress.config(value=80)
                 self.update_stage(2, "complete")
                 self.update_stage(3, "active")
             self.root.after(0, update_stage_3)
+            
+            # Collect checksum data for report
+            if pre_wipe_checksum and post_wipe_checksum:
+                print("\n📋 Collecting checksum data for report...")
+                self.report_generator.collect_checksum_data(pre_wipe_checksum, post_wipe_checksum)
+            
+            # Collect wipe process info
+            print("📋 Collecting wipe process information...")
+            wipe_method = self.wipe_decision.get('primary_method', 'Unknown')
+            self.report_generator.collect_wipe_process_info(wipe_result, wipe_method)
+            
+            # Collect footprint deletion proof
+            if drive_letter:
+                print("📋 Collecting footprint deletion evidence...")
+                self.report_generator.collect_footprint_deletion_proof(drive_letter)
+            
+            # Generate deletion proof
+            print("📋 Generating data deletion proof...")
+            self.report_generator.generate_data_deletion_proof()
+            
+            # Save comprehensive report
+            print("\n💾 Saving comprehensive report...")
+            report_path = self.report_generator.save_report(self.boot_drive)
+            
+            # Store report path in verification result
+            if report_path:
+                verification_result['report_path'] = report_path
             
             # Store verification results for display on success screen
             self.verification_result = verification_result
@@ -547,6 +623,8 @@ This action cannot be undone."""
                 self.update_stage(3, "complete")
             self.root.after(0, update_final)
             
+            print("\n✅ All operations completed successfully!\n")
+            
             # Transition to success screen after brief delay
             self.root.after(1000, self.show_success_screen_transition)
             
@@ -554,6 +632,7 @@ This action cannot be undone."""
             # Handle any errors during the purification process
             sanitized_error = str(e).replace('\n', ' ').replace('\r', '').replace('\t', ' ')[:200]
             error_msg = f"Purification failed: {sanitized_error}"
+            print(f"\n❌ {error_msg}\n")
             self.root.after(0, lambda: messagebox.showerror("Purification Failed", error_msg))
             self.root.after(0, self.root.quit)
         finally:
@@ -634,7 +713,7 @@ Verification: {verification_status}"""
                 cert_frame = tk.Frame(main_frame, bg='#34495e', padx=15, pady=15)
                 cert_frame.pack(fill=tk.X, pady=(0, 20))
                 
-                cert_title = tk.Label(cert_frame, text="CERTIFICATES SAVED TO DESKTOP:",
+                cert_title = tk.Label(cert_frame, text="CERTIFICATES AND REPORTS SAVED TO DESKTOP:",
                                     font=('Arial', 12, 'bold'), fg='#3498db', bg='#34495e')
                 cert_title.pack()
                 
@@ -658,6 +737,20 @@ Verification: {verification_status}"""
                     pdf_label = tk.Label(cert_frame, text=f"📋 {pdf_filename}",
                                        font=('Arial', 10, 'bold'), fg='#3498db', bg='#34495e')
                     pdf_label.pack(anchor=tk.W, padx=10)
+                
+                # Show comprehensive report if available
+                report_path = self.verification_result.get('report_path', '')
+                if report_path:
+                    report_filename = Path(report_path).name
+                    report_label = tk.Label(cert_frame, text=f"📊 {report_filename}",
+                                          font=('Arial', 10, 'bold'), fg='#e67e22', bg='#34495e')
+                    report_label.pack(anchor=tk.W, padx=10)
+                    
+                    # Add description for the report
+                    report_desc = tk.Label(cert_frame, 
+                                         text="(Comprehensive report with checksums, drive parameters, and deletion proof)",
+                                         font=('Arial', 8), fg='#95a5a6', bg='#34495e')
+                    report_desc.pack(anchor=tk.W, padx=20, pady=(2, 5))
                 
                 # Show forensic report if available
                 wipe_result = self.verification_result.get('wipe_result', {})

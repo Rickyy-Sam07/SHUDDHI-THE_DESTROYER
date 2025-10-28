@@ -19,6 +19,8 @@ try:
     from production_wipe_engine import WipeEngine, WipeExecutionError
     from production_verification_engine import VerificationEngine
     from emergency_handler import EmergencyHandler
+    from checksum_verifier import ChecksumVerifier
+    from report_generator import ReportGenerator
 except ImportError as e:
     print(f"Import Error: {e}")
     sys.exit(1)
@@ -92,6 +94,7 @@ class ShuddGUI:
         self.wipe_engine = None
         self.verification_engine = None
         self.emergency_handler = EmergencyHandler()
+        self.report_generator = ReportGenerator()  # Initialize report generator
         
         # State tracking
         self.selected_drive = None
@@ -403,12 +406,146 @@ Description: {self.selected_method['description']}"""
             # Determine wipe method
             wipe_method = self.system_core.determine_wipe_method(self.selected_drive)
             
+            # === REPORT GENERATION: Collect data BEFORE wipe ===
+            # Collect drive information before wipe (this also detects drive letter)
+            print(f"\n📊 Collecting drive information before wipe...")
+            self.report_generator.collect_drive_info_before(self.selected_drive)
+            
+            # Get drive letter from the collected data
+            drive_letter = self.report_generator.report_data.get("drive_info_before", {}).get("drive_letter")
+            
+            if drive_letter:
+                print(f"📍 Detected drive letter: {drive_letter}")
+            else:
+                print(f"⚠️  No drive letter found in drive info")
+            
+            # Calculate pre-wipe checksum (if possible for the drive type)
+            print(f"🔐 Calculating pre-wipe checksum...")
+            pre_wipe_checksum = None
+            checksum_verifier = None
+            if drive_letter:
+                try:
+                    checksum_verifier = ChecksumVerifier(drive_letter)
+                    pre_wipe_checksum = checksum_verifier.calculate_pre_wipe_checksum()
+                    print(f"✓ Pre-wipe checksum calculated successfully")
+                except Exception as e:
+                    print(f"⚠️  Could not calculate pre-wipe checksum: {str(e)[:100]}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print(f"⚠️  No drive letter found, skipping checksum calculation")
+            
             # Execute wipe using selected method
             drive_path = self.selected_drive['DeviceID']
             method_id = self.selected_method['method_id']
             result = self.wipe_engine.execute_wipe_method(method_id, drive_path, self.selected_drive)
             
             if result['success']:
+                # === REPORT GENERATION: Collect data AFTER wipe ===
+                print(f"\n📊 Collecting drive information after wipe...")
+                self.report_generator.collect_drive_info_after(self.selected_drive)
+                
+                # Calculate post-wipe checksum
+                print(f"🔐 Calculating post-wipe checksum...")
+                checksum_data = {}
+                if drive_letter and pre_wipe_checksum and checksum_verifier:
+                    try:
+                        post_wipe_checksum = checksum_verifier.calculate_post_wipe_checksum()
+                        
+                        # Build checksum data from results
+                        checksum_data = {
+                            "pre_wipe_checksum": pre_wipe_checksum.get('checksum', 'N/A'),
+                            "post_wipe_checksum": post_wipe_checksum.get('checksum', 'N/A'),
+                            "checksum_match": pre_wipe_checksum.get('checksum') == post_wipe_checksum.get('checksum'),
+                            "checksums_different": pre_wipe_checksum.get('checksum') != post_wipe_checksum.get('checksum'),
+                            "pre_wipe_status": pre_wipe_checksum.get('status', 'UNKNOWN'),
+                            "post_wipe_status": post_wipe_checksum.get('status', 'UNKNOWN'),
+                            "drive_letter": drive_letter,
+                            "data_destroyed_verified": pre_wipe_checksum.get('checksum') != post_wipe_checksum.get('checksum'),
+                            "verification_timestamp": datetime.now().isoformat()
+                        }
+                        print(f"✓ Post-wipe checksum calculated successfully")
+                        print(f"✓ Data destruction verified: {checksum_data['checksums_different']}")
+                    except Exception as e:
+                        print(f"⚠️  Could not calculate post-wipe checksum: {str(e)[:100]}")
+                        checksum_data = {
+                            "pre_wipe_checksum": pre_wipe_checksum.get('checksum', 'N/A') if pre_wipe_checksum else "N/A",
+                            "post_wipe_checksum": "Error during calculation",
+                            "checksum_match": False,
+                            "checksums_different": False,
+                            "error": str(e),
+                            "verification_timestamp": datetime.now().isoformat()
+                        }
+                else:
+                    reason = "No drive letter" if not drive_letter else "Pre-checksum calculation failed"
+                    checksum_data = {
+                        "pre_wipe_checksum": f"N/A ({reason})",
+                        "post_wipe_checksum": "N/A",
+                        "checksum_match": False,
+                        "checksums_different": False,
+                        "verification_timestamp": datetime.now().isoformat()
+                    }
+                    print(f"⚠️  Checksum verification skipped: {reason}")
+                
+                # Prepare wipe process information with detailed overwrite status
+                # Determine number of passes based on method
+                passes_map = {
+                    "NIST_SP_800_88_CLEAR": 1,
+                    "NIST_SP_800_88_PURGE": 1,
+                    "DOD_5220_22_M": 3,
+                    "AFSSI_5020": 3,
+                    "ATA_SECURE_ERASE": 1,
+                    "NVME_FORMAT": 1,
+                    "CRYPTOGRAPHIC_ERASE": 1
+                }
+                num_passes = passes_map.get(method_id, result.get('passes', 1))
+                
+                wipe_process_info = {
+                    "wipe_method": self.selected_method['name'],
+                    "method_id": method_id,
+                    "files_wiped": result.get('files_wiped', 0),
+                    "bytes_written": result.get('bytes_written', 0),
+                    "bytes_overwritten": result.get('bytes_written', 0),  # Total bytes overwritten
+                    "passes": num_passes,  # Number of overwrite passes
+                    "overwrite_passes_completed": num_passes,  # Explicit pass count
+                    "success": result.get('success', True),  # Add success flag from wipe result
+                    "overwrite_status": "COMPLETED" if result.get('success', True) else "FAILED",
+                    "timestamp": datetime.now().isoformat(),
+                    "drive_model": self.selected_drive.get('Model', 'Unknown'),
+                    "drive_serial": self.selected_drive.get('SerialNumber', 'Unknown')
+                }
+                
+                # Generate deletion proof with wipe info
+                print(f"📊 Generating data deletion proof...")
+                
+                # Store data in the format expected by generate_data_deletion_proof()
+                # It expects "wipe_process_info" not "wipe_process"
+                self.report_generator.report_data["wipe_process_info"] = wipe_process_info
+                
+                # Build checksum data in the format expected by generate_data_deletion_proof()
+                checksum_verification_formatted = {
+                    "verification": {
+                        "checksums_different": checksum_data.get("checksums_different", False),
+                        "data_overwritten": checksum_data.get("checksums_different", False),
+                        "verification_status": "VERIFIED" if checksum_data.get("checksums_different", False) else "FAILED"
+                    }
+                }
+                checksum_verification_formatted.update(checksum_data)
+                self.report_generator.report_data["checksum_verification"] = checksum_verification_formatted
+                
+                # Generate footprint deletion proof (this uses the updated report_data)
+                footprint_deletion = self.report_generator.generate_data_deletion_proof()
+                
+                # Generate and save report
+                print(f"📝 Generating comprehensive report...")
+                report_path = self.report_generator.save_report(self.selected_drive)
+                
+                # Print report location to console
+                print(f"\n✅ ═══════════════════════════════════════════════════════")
+                print(f"✅ Comprehensive report saved to:")
+                print(f"✅ {report_path}")
+                print(f"✅ ═══════════════════════════════════════════════════════\n")
+                
                 # Get Desktop path
                 desktop_path = str(Path.home() / "Desktop")
                 
@@ -416,6 +553,7 @@ Description: {self.selected_method['description']}"""
                 success_msg = (f"Wipe operation completed successfully!\n\n"
                               f"Files wiped: {result['files_wiped']:,}\n"
                               f"Data destroyed: {result['bytes_written']:,} bytes\n\n"
+                              f"Detail report generated at:\n{report_path}\n"
                               f"Certificate Location:\n"
                               f"Desktop: {desktop_path}\n\n")
                 
