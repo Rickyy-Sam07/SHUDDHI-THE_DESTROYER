@@ -72,7 +72,7 @@ echo.
 REM Build the EXE
 echo Building Shuddh.exe...
 echo.
-pyinstaller production_shuddh.spec --clean
+python -m PyInstaller production_shuddh.spec --clean
 
 if %errorlevel% equ 0 (
     echo.

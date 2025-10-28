@@ -4,7 +4,7 @@
 PyInstaller spec file for Shuddh - The Destroyer (Production Version)
 
 This spec file ensures all necessary modules are included in the EXE:
-- production_shuddh.py (main GUI)
+- shuddh_gui.py (main GUI with report generation)
 - production_system_core.py (hardware detection)
 - production_wipe_engine.py (data destruction)
 - production_verification_engine.py (verification & certificates)
@@ -18,7 +18,7 @@ Build command:
 """
 
 a = Analysis(
-    ['production_shuddh.py'],
+    ['shuddh_gui.py'],
     pathex=[],
     binaries=[],
     datas=[],
