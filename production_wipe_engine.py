@@ -166,6 +166,38 @@ class WipeEngine:
         else:
             raise WipeExecutionError(f"Unknown wipe method: {method_id}")
     
+    def execute_wipe(self, drive_info: Dict[str, Any], wipe_decision: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute wipe operation based on drive info and wipe decision.
+        This is the main entry point called by the GUI.
+        
+        Args:
+            drive_info: Drive information dictionary
+            wipe_decision: Wipe method decision from SystemCore.determine_wipe_method()
+            
+        Returns:
+            Dictionary containing wipe results
+        """
+        try:
+            # Extract wipe method from decision
+            method = wipe_decision.get('primary_method', 'AES_128_CTR')
+            drive_path = drive_info.get('DeviceID', '')
+            
+            # Map legacy method names to new method IDs
+            method_mapping = {
+                'AES_128_CTR': 'NIST_SP_800_88_CLEAR',
+                'ATA_SECURE_ERASE': 'ATA_SECURE_ERASE',
+                'NVME_FORMAT_NVM': 'CRYPTOGRAPHIC_ERASE'
+            }
+            
+            method_id = method_mapping.get(method, 'NIST_SP_800_88_CLEAR')
+            
+            # Execute the wipe
+            return self.execute_wipe_method(method_id, drive_path, drive_info)
+            
+        except Exception as e:
+            raise WipeExecutionError(f"Wipe execution failed: {e}")
+    
     def _execute_nist_clear(self, drive_path: str, drive_info: Dict[str, Any]) -> Dict[str, Any]:
         """Execute NIST SP 800-88 Clear method"""
         
